@@ -17,9 +17,15 @@ class Registry:
         self._capabilities = {}
 
     def register(self, capability):
+        # Validate before mutating: a malformed optional adapter must not make
+        # every capability undiscoverable or reserve an unusable registry name.
+        if not isinstance(capability.name, str) or not capability.name:
+            raise ValueError("invalid capability name")
+        if not callable(capability.handler):
+            raise ValueError("invalid capability handler")
         if capability.name in self._capabilities:
             raise ValueError("duplicate capability")
-        if capability.effect not in {"read", "write"}:
+        if not isinstance(capability.effect, str) or capability.effect not in {"read", "write"}:
             raise ValueError("invalid effect")
         self._capabilities[capability.name] = capability
 
