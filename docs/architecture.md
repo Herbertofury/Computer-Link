@@ -29,3 +29,7 @@ This foundation is not a hardened service or permission sandbox. Python code loa
 - [ ] File edit / process / UI workflows with backups and effect verification.
 - [ ] Ordinary chat and dot end-to-end actual supported connection tested separately.
 - [ ] No-loss compatibility, latency and memory evidence on real Windows workflows.
+
+## Local request budget
+
+The current no-payload diagnostics protocol accepts at most 65,536 Unicode characters per request line, including its newline if present. Oversized lines are drained using bounded reads and produce one `request too large` error without dispatching a truncated prefix. The next complete request remains usable, including after oversized input at EOF. This is a transport resource budget, not a catalog/content cap. Future bulk adapters require a separately designed streaming contract; the current transport is still not a hardened permission sandbox.
