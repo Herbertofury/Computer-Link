@@ -28,6 +28,51 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ValueError): r.register(Capability("system.summary", "read", lambda: 0))
         with self.assertRaises(ValueError): r.register(Capability("bad", "unknown", lambda: 0))
 
+    def test_invalid_registration_never_poison_existing_capabilities(self):
+        invalid = [Capability(name, "read", lambda: 0)
+                   for name in (None, 7, [], {}, "")]
+        invalid += [Capability("bad", effect, lambda: 0)
+                    for effect in (None, [], {}, 7)]
+        invalid += [Capability("bad", "read", handler)
+                    for handler in (None, 7, {}, "not callable")]
+        for capability in invalid:
+            with self.subTest(capability=capability):
+                registry = diagnostics_registry()
+                before = registry.describe()
+                with self.assertRaises(ValueError):
+                    registry.register(capability)
+                self.assertEqual(registry.describe(), before)
+                self.assertIn("result", respond(registry, {"method": "capabilities.list"}))
+                self.assertIn("os", registry.call("system.summary"))
+                registry.register(Capability("bad", "read", lambda: "repaired"))
+                self.assertEqual(registry.call("bad"), "repaired")
+
+    def test_process_discovery_survives_rejected_optional_registration(self):
+        script = """
+from unittest.mock import patch
+from computer_link import Capability, diagnostics_registry
+from computer_link.__main__ import main
+registry = diagnostics_registry()
+for candidate in [Capability(None, 'read', lambda: 0),
+                  Capability('bad', 'read', None)]:
+    try:
+        registry.register(candidate)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid registration accepted')
+with patch('computer_link.__main__.diagnostics_registry', return_value=registry):
+    main()
+"""
+        p = subprocess.run([sys.executable, "-c", script],
+                           input='{"id":1,"method":"capabilities.list"}\n'
+                                 '{"id":2,"method":"system.summary"}\n',
+                           text=True, capture_output=True, check=True)
+        results = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(results[0]["result"], [{"name": "system.summary", "effect": "read"}])
+        self.assertIn("os", results[1]["result"])
+        self.assertEqual(p.stderr, "")
+
     def test_disk_no_path_disclosure(self):
         with tempfile.TemporaryDirectory() as d:
             r = diagnostics_registry(d)
