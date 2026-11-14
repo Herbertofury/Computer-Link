@@ -26,6 +26,11 @@ def respond(registry, request):
         return {"id": identity, "error": str(error)}
     except OSError:
         return {"id": identity, "error": "operating system unavailable"}
+    except Exception:
+        # A faulty optional adapter must not terminate unrelated capabilities.
+        # Do not disclose arbitrary exception text or internal machine details.
+        # BaseException (including KeyboardInterrupt/SystemExit) still propagates.
+        return {"id": identity, "error": "capability failed"}
 
 
 def main():

@@ -57,6 +57,49 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(results[1]["id"], 2)
         self.assertFalse(results[1]["result"]["network_listener"])
 
+    def test_adapter_failure_isolated_and_private(self):
+        r = diagnostics_registry()
+        def broken():
+            raise RuntimeError("private adapter path or credential")
+        r.register(Capability("optional.broken", "read", broken))
+        self.assertEqual(respond(r, {"id": 7, "method": "optional.broken"}),
+                         {"id": 7, "error": "capability failed"})
+        self.assertIn("result", respond(r, {"id": 8, "method": "system.summary"}))
+
+    def test_shutdown_signals_propagate(self):
+        for signal in (KeyboardInterrupt, SystemExit):
+            r = Registry()
+            def stop():
+                raise signal()
+            r.register(Capability("stop", "read", stop))
+            with self.assertRaises(signal):
+                respond(r, {"method": "stop"})
+
+    def test_process_survives_optional_adapter_failure(self):
+        script = """
+from unittest.mock import patch
+from computer_link import Capability, diagnostics_registry
+from computer_link.__main__ import main
+registry = diagnostics_registry()
+def broken():
+    raise RuntimeError("private adapter failure")
+registry.register(Capability("optional.broken", "read", broken))
+with patch("computer_link.__main__.diagnostics_registry", return_value=registry):
+    main()
+"""
+        requests = [{"id": 1, "method": "optional.broken"},
+                    {"id": 2, "method": "system.summary"},
+                    {"id": 3, "method": "capabilities.list"}]
+        p = subprocess.run([sys.executable, "-c", script],
+                           input="".join(json.dumps(r) + "\n" for r in requests),
+                           text=True, capture_output=True, check=True)
+        results = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0], {"id": 1, "error": "capability failed"})
+        self.assertIn("result", results[1])
+        self.assertIn("result", results[2])
+        self.assertNotIn("private", p.stdout + p.stderr)
+
     def test_unknown_does_not_execute(self):
         out = respond(diagnostics_registry(), {"method":"shell.execute"})
         self.assertEqual(out["error"], "unsupported capability")
