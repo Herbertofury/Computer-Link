@@ -66,6 +66,25 @@ class CoreTests(unittest.TestCase):
                          {"id": 7, "error": "capability failed"})
         self.assertIn("result", respond(r, {"id": 8, "method": "system.summary"}))
 
+    def test_adapter_validation_exceptions_are_not_public_request_errors(self):
+        for kind in (ValueError, PermissionError):
+            with self.subTest(kind=kind):
+                r = diagnostics_registry()
+                def broken():
+                    raise kind('private machine path and credential')
+                r.register(Capability('optional.broken', 'read', broken))
+                self.assertEqual(respond(r, {'id': 1, 'method': 'optional.broken'}),
+                                 {'id': 1, 'error': 'capability failed'})
+                self.assertIn('result', respond(r, {'id': 2, 'method': 'system.summary'}))
+
+    def test_known_request_errors_remain_useful(self):
+        r = diagnostics_registry()
+        r.register(Capability('write', 'write', lambda: self.fail('must not execute')))
+        for request, expected in [({'method': 'missing'}, 'unsupported capability'),
+                                  ({'method': 'system.summary', 'params': {'x': 1}}, 'unexpected parameters'),
+                                  ({'method': 'write'}, 'read-only session')]:
+            self.assertEqual(respond(r, request)['error'], expected)
+
     def test_shutdown_signals_propagate(self):
         for signal in (KeyboardInterrupt, SystemExit):
             r = Registry()

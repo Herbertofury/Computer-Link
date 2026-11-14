@@ -38,7 +38,12 @@ class Registry:
             raise PermissionError("read-only session")
         if params not in (None, {}):
             raise ValueError("unexpected parameters")
-        return c.handler()
+        try:
+            return c.handler()
+        except (ValueError, PermissionError):
+            # Only the checks above produce public request diagnostics. An
+            # adapter may put private paths/data in these same exception types.
+            raise RuntimeError("capability failed") from None
 
 
 def diagnostics_registry(workspace=None):
