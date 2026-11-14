@@ -58,3 +58,34 @@ If selected, implement an optional remote adapter behind narrow capability contr
 6. Measure startup, idle server/endpoint CPU and RAM, disk footprint and end-to-end p50/p95 latency against local candidates on equivalent work. Retain sanitized raw evidence and all failures. No performance or reliability superiority is claimed.
 
 **Current state:** source/document review only; no server, credentials, endpoint installation, network exposure, remote command or Windows acceptance test performed. Next gate is an approved isolated deployment with exact version/security review, then the comparison above.
+
+## MCP compatibility foundation refresh (2026-11-14)
+
+**Status: research candidate, not an implemented integration or performance winner.** The prior review covered desktop/remote-management products; this pass covers the protocol boundary they do not solve for our current JSON-lines CLI.
+
+### Current primary-source evidence
+
+The official Python SDK release page currently marks [v2.3.0](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.3.0) latest. Relevant release changes include Windows executable resolution moved off the event loop, corrected empty-metadata handling for older protocol connections, and registration-time rejection of invalid header annotations. These are upstream claims, not Computer Link benchmark results. The version also changes HTTP dependency requirements; evaluate a locked dependency graph rather than installing floating latest.
+
+The pinned [package metadata](https://github.com/modelcontextprotocol/python-sdk/blob/v2.3.0/pyproject.toml) requires Python >=3.10, compatible with our Python 3.11+ floor. Its [MIT license](https://github.com/modelcontextprotocol/python-sdk/blob/v2.3.0/LICENSE) requires retention of the copyright and permission notice when redistributing applicable source. Check transitive licenses independently. The [versioned README](https://github.com/modelcontextprotocol/python-sdk/blob/v2.3.0/README.md) documents the v2 MCPServer API and links migration guidance; do not mix v1 FastMCP examples into a v2 implementation without checking compatibility.
+
+The [2026-07-28 transport specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports) distinguishes JSON-RPC semantics from newline framing. It uses per-request protocol/capability metadata and describes compatibility with earlier initialization-based sessions. Therefore “it reads JSON lines” is not MCP acceptance, and testing only an old initialize handshake would also be insufficient.
+
+### Reproduced local baseline
+
+Against source/tests identical to main `5c215f9f236a25c8c5afb062c8db20cd75ffbf24`, the existing 23 Python unit tests passed on Linux. An actual CLI sequence containing a JSON-RPC initialize request followed by native capabilities.list produced:
+
+```json
+{"error": "invalid request"}
+{"id": 2, "result": [{"name": "system.summary", "effect": "read"}]}
+```
+
+This confirms the documented boundary and continued native operation, not a regression: JSON-RPC's jsonrpc member is deliberately outside the CLI contract.
+
+### Bounded next evaluation
+
+Compare an **optional** pinned SDK stdio adapter with the unchanged CLI, exposing only existing read-only diagnostics. Reuse protocol machinery rather than relaxing the native parser into a partial MCP implementation. No HTTP listener, OAuth, device enrollment, shell capability or persistent grant is part of this candidate.
+
+Acceptance must cover current and legacy client modes, discovery/schema fidelity, complete results, protocol errors versus tool failures, Unicode and malformed input, cancellation/EOF, repeated calls and absent optional dependencies. Verify the actual target client independently. Retain existing request-budget and diagnostic-independence protections; do not assume SDK defaults reproduce them.
+
+Measure cold startup, first successful diagnostic, repeated-call p50/p95 latency, peak RSS and installed dependency size on equivalent workloads. A dependency increase must be explicit, not hidden behind warm-cache timings. Keep the standard-library core usable without the SDK. Native Windows, SDK execution, interoperability, performance and dot integration remain **untested** in this pass.
