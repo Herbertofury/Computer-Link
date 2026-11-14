@@ -63,6 +63,39 @@ assert calls == [1], calls
         self.assertEqual(results[-1], {'id': 3, 'result': None})
         self.assertEqual(p.stderr, '')
 
+    def test_invalid_utf8_line_recovers_under_strict_process_encoding(self):
+        import os
+        env = dict(os.environ, PYTHONIOENCODING="utf-8:strict")
+        requests = [b'{"id":"\xff","method":"system.summary"}',
+                    b'{"id":"\xc3","method":"system.summary"}',
+                    b'{"id":"\xed\xa0\x80","method":"system.summary"}']
+        valid = json.dumps({"id": "音楽 🎵", "method": "system.summary"},
+                           ensure_ascii=False).encode("utf-8")
+        p = subprocess.run([sys.executable, "-m", "computer_link"],
+                           input=b"\n".join(requests + [valid]) + b"\n",
+                           capture_output=True, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        results = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(results[:-1], [{"error": "invalid JSON"}] * 3)
+        self.assertEqual(results[-1]["id"], "音楽 🎵")
+        self.assertIn("result", results[-1])
+        self.assertEqual(p.stderr, b"")
+
+    def test_oversized_invalid_utf8_drains_before_next_unicode_request(self):
+        import os
+        from computer_link.__main__ import MAX_REQUEST_CHARS
+        valid = b'{"id":"\\udcff","method":"capabilities.list"}\n'
+        p = subprocess.run([sys.executable, "-m", "computer_link"],
+                           input=b"\xff" * (MAX_REQUEST_CHARS * 2) + b"\n" + valid,
+                           capture_output=True,
+                           env=dict(os.environ, PYTHONIOENCODING="ascii:strict"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        results = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(results[0], {"error": "request too large"})
+        self.assertEqual(results[1]["id"], "\udcff")
+        self.assertIn("result", results[1])
+        self.assertEqual(p.stderr, b"")
+
     def test_invalid_adapter_output_recovers_without_partial_response(self):
         script = '''
 from unittest.mock import patch

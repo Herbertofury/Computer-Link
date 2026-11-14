@@ -72,11 +72,18 @@ def main():
         registry = diagnostics_registry(args.workspace)
     except (ValueError, OSError):
         parser.error("workspace is unavailable or not a directory")
+    # Fix the wire encoding independently of the host locale. Preserve invalid
+    # bytes as sentinels until a complete bounded line can be rejected, rather
+    # than losing later requests to TextIOWrapper read-ahead decoding errors.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
     for line in bounded_lines(sys.stdin):
         if line is None:
             print(json.dumps({"error": "request too large"}), flush=True)
             continue
         try:
+            if any("\udc80" <= char <= "\udcff" for char in line):
+                raise ValueError("invalid UTF-8 input")
             request = json.loads(line, object_pairs_hook=unique_members)
             response = respond(registry, request)
         except (ValueError, RecursionError):
