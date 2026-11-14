@@ -3,6 +3,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from collections import namedtuple
 from computer_link import Capability, Registry, diagnostics_registry
 from computer_link.__main__ import respond
 
@@ -32,7 +34,13 @@ class CoreTests(unittest.TestCase):
             out = r.call("workspace.disk")
             self.assertGreater(out["total_bytes"], 0)
             self.assertNotIn(d, json.dumps(out))
-            self.assertEqual(out["total_bytes"], out["used_bytes"] + out["free_bytes"])
+            self.assertGreaterEqual(out["total_bytes"], out["used_bytes"])
+            self.assertGreaterEqual(out["available_bytes"], 0)
+
+    def test_reserved_blocks_preserved(self):
+        usage = namedtuple("usage", "total used free")(100, 30, 60)
+        with tempfile.TemporaryDirectory() as d, patch("computer_link.shutil.disk_usage", return_value=usage):
+            self.assertEqual(diagnostics_registry(d).call("workspace.disk"), {"total_bytes":100,"used_bytes":30,"available_bytes":60})
 
     def test_no_implicit_workspace(self):
         self.assertEqual(len(diagnostics_registry().describe()), 1)

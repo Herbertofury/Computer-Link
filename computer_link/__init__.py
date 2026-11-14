@@ -56,6 +56,6 @@ def diagnostics_registry(workspace=None):
         def disk():
             usage = shutil.disk_usage(root)
             return {"total_bytes": usage.total, "used_bytes": usage.used,
-                    "free_bytes": usage.free}
+                    "available_bytes": usage.free}
         registry.register(Capability("workspace.disk", "read", disk))
     return registry
