@@ -36,6 +36,33 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(p.stdout, '{"error": "request too large"}\n')
 
 
+    def test_duplicate_members_never_dispatch_and_next_request_recovers(self):
+        script = """
+from unittest.mock import patch
+from computer_link import Capability, Registry
+from computer_link.__main__ import main
+r = Registry()
+calls = []
+r.register(Capability('probe', 'read', lambda: calls.append(1)))
+with patch('computer_link.__main__.diagnostics_registry', return_value=r):
+    main()
+assert calls == [1], calls
+"""
+        requests = [
+            '{"id":1,"method":"unsupported","method":"probe"}',
+            '{"id":1,"id":2,"method":"probe"}',
+            '{"method":"probe","params":{"unsafe":true},"params":{}}',
+            '{"method":"probe","params":{"x":1,"x":2}}',
+        ]
+        p = subprocess.run([sys.executable, '-c', script],
+                           input='\n'.join(requests + ['{"id":3,"method":"probe"}']) + '\n',
+                           text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        results = [json.loads(line) for line in p.stdout.splitlines()]
+        self.assertEqual(results[:-1], [{'error': 'invalid JSON'}] * len(requests))
+        self.assertEqual(results[-1], {'id': 3, 'result': None})
+        self.assertEqual(p.stderr, '')
+
     def test_invalid_adapter_output_recovers_without_partial_response(self):
         script = '''
 from unittest.mock import patch
