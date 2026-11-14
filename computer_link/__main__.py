@@ -47,7 +47,15 @@ def main():
             response = respond(registry, request)
         except (ValueError, RecursionError):
             response = {"error": "invalid JSON"}
-        print(json.dumps(response, ensure_ascii=True), flush=True)
+        try:
+            # Encode completely before emitting: a broken adapter must not leave
+            # a partial line or terminate subsequent independent requests.
+            encoded = json.dumps(response, ensure_ascii=True, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            encoded = json.dumps({"id": response.get("id"),
+                                  "error": "invalid capability response"},
+                                 ensure_ascii=True)
+        print(encoded, flush=True)
 
 
 if __name__ == "__main__":

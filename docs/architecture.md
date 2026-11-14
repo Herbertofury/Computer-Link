@@ -11,7 +11,7 @@ The local process is a tool executor, not an additional AI agent. Clients provid
 7. Browser adapter: supported browser tools first, isolated from desktop. Not implemented.
 8. Client adapters: ordinary chat, dot and generic MCP clients each get independent acceptance matrices. Not implemented.
 
-Disable/remove any optional adapter without breaking diagnostics, CLI or other adapters. Unexpected adapter exceptions return a generic `capability failed` response with the request ID, without exposing exception text or terminating the JSON-lines session; later independent calls continue. Process shutdown signals are not swallowed. No Constellation, Hover, Agent-Foundry, or game project should require this service for unrelated features. Shared governance is a pinned documentation snapshot, not a runtime dependency.
+Disable/remove any optional adapter without breaking diagnostics, CLI or other adapters. Unexpected adapter exceptions return a generic `capability failed` response with the request ID, without exposing exception text or terminating the JSON-lines session; later independent calls continue. Process shutdown signals are not swallowed. Responses are fully encoded before writing a line; unsupported objects, circular values and non-finite numbers produce a generic request-correlated error rather than crashing the session or emitting invalid JSON. No Constellation, Hover, Agent-Foundry, or game project should require this service for unrelated features. Shared governance is a pinned documentation snapshot, not a runtime dependency.
 
 ## Security boundaries
 
