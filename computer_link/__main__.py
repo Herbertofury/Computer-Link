@@ -5,6 +5,27 @@ import sys
 from . import diagnostics_registry
 
 
+MAX_REQUEST_CHARS = 65536
+
+
+def bounded_lines(stream):
+    """Yield complete lines, or None for an oversized line after draining it.
+
+    Each read is bounded, including discarded content. The limit includes the
+    newline when present; never parse a truncated prefix as another request.
+    """
+    while True:
+        line = stream.readline(MAX_REQUEST_CHARS + 1)
+        if not line:
+            return
+        if len(line) <= MAX_REQUEST_CHARS:
+            yield line
+            continue
+        while line and not line.endswith("\n"):
+            line = stream.readline(MAX_REQUEST_CHARS + 1)
+        yield None
+
+
 def respond(registry, request):
     if not isinstance(request, dict) or set(request) - {"id", "method", "params"}:
         return {"error": "invalid request"}
@@ -41,7 +62,10 @@ def main():
         registry = diagnostics_registry(args.workspace)
     except (ValueError, OSError):
         parser.error("workspace is unavailable or not a directory")
-    for line in sys.stdin:
+    for line in bounded_lines(sys.stdin):
+        if line is None:
+            print(json.dumps({"error": "request too large"}), flush=True)
+            continue
         try:
             request = json.loads(line)
             response = respond(registry, request)
