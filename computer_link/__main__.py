@@ -26,6 +26,16 @@ def bounded_lines(stream):
         yield None
 
 
+def unique_members(pairs):
+    """Reject ambiguous JSON objects before selecting a method or parameters."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON member")
+        value[key] = item
+    return value
+
+
 def respond(registry, request):
     if not isinstance(request, dict) or set(request) - {"id", "method", "params"}:
         return {"error": "invalid request"}
@@ -67,7 +77,7 @@ def main():
             print(json.dumps({"error": "request too large"}), flush=True)
             continue
         try:
-            request = json.loads(line)
+            request = json.loads(line, object_pairs_hook=unique_members)
             response = respond(registry, request)
         except (ValueError, RecursionError):
             response = {"error": "invalid JSON"}

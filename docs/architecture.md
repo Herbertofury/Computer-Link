@@ -33,3 +33,5 @@ This foundation is not a hardened service or permission sandbox. Python code loa
 ## Local request budget
 
 The current no-payload diagnostics protocol accepts at most 65,536 Unicode characters per request line, including its newline if present. Oversized lines are drained using bounded reads and produce one `request too large` error without dispatching a truncated prefix. The next complete request remains usable, including after oversized input at EOF. This is a transport resource budget, not a catalog/content cap. Future bulk adapters require a separately designed streaming contract; the current transport is still not a hardened permission sandbox.
+
+Duplicate JSON object members, including nested parameters, are rejected before dispatch. A repeated method, request ID or params field is ambiguous rather than a last-value-wins override. The rejection is uncorrelated `invalid JSON` because no unambiguous request identity exists; the following complete request remains usable.
