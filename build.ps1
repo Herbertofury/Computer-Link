@@ -48,8 +48,20 @@ try {
 $empty=Join-Path $smoke 'empty'
 New-Item -ItemType Directory -Path $empty | Out-Null
 $log=Join-Path $smoke 'smoke.log'
-$p=Start-Process -FilePath $exe -WorkingDirectory $smoke -ArgumentList @('--opt','SSE','--log',('"'+$log+'"'),('"'+$empty+'"')) -PassThru
-try { if (!$p.WaitForExit(20000) -or $p.ExitCode -ne 0) { throw 'Empty-input CLI exit failed' } }
+$start=[Diagnostics.ProcessStartInfo]::new()
+$start.FileName=$exe
+$start.WorkingDirectory=$smoke
+$start.UseShellExecute=$false
+foreach($arg in @('--optimize','SSE','--log',$log,$empty)) { $start.ArgumentList.Add($arg) }
+$p=[Diagnostics.Process]::new()
+$p.StartInfo=$start
+if (!$p.Start()) { throw 'CLI launch failed' }
+try {
+ if (!$p.WaitForExit(20000)) { throw 'Empty-input CLI timeout' }
+ Write-Output "Empty-input CLI exit code: $($p.ExitCode)"
+ if (Test-Path $log) { Get-Content $log }
+ if ($p.ExitCode -ne 0) { throw 'Empty-input CLI nonzero exit' }
+}
 finally { if (!$p.HasExited) { $p.Kill(); $p.WaitForExit() } }
 if (!(Test-Path $log) -or !(Select-String -Path $log -SimpleMatch 'SSE NIF Optimizer v3.2.2' -Quiet)) { throw 'Version log missing' }
 Copy-Item $exe 'deliverable/SSE NIF Optimizer.exe'
