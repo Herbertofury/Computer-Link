@@ -1,4 +1,4 @@
-use std::{ffi::{c_void,OsStr},io,mem::{size_of,zeroed},os::windows::ffi::OsStrExt,path::{Path,PathBuf},ptr::{null,null_mut},thread,time::{Duration,Instant}};
+use std::{rc::Rc,ffi::{c_void,OsStr},io,mem::{size_of,zeroed},os::windows::ffi::OsStrExt,path::{Path,PathBuf},ptr::{null,null_mut},thread,time::{Duration,Instant}};
 type Handle=*mut c_void;
 #[repr(C)] struct BasicLimit{process_time:i64,job_time:i64,flags:u32,min_ws:usize,max_ws:usize,active_limit:u32,affinity:usize,priority:u32,scheduling:u32}
 #[repr(C)] struct IoCounters{read_ops:u64,write_ops:u64,other_ops:u64,read_bytes:u64,write_bytes:u64,other_bytes:u64}
@@ -25,9 +25,9 @@ struct Owned(Handle); impl Drop for Owned{fn drop(&mut self){unsafe{CloseHandle(
 fn wide(s:&OsStr)->io::Result<Vec<u16>>{let mut v:Vec<_>=s.encode_wide().collect();if v.contains(&0){return Err(io::Error::other("NUL refused"))}v.push(0);Ok(v)}
 // Quote using Windows CRT backslash/quote convention. No shell involved.
 fn quote(s:&str)->String{let mut out=String::from("\"");let mut slashes=0;for c in s.chars(){if c=='\\'{slashes+=1;continue}if c=='"'{out.push_str(&"\\".repeat(slashes*2+1));out.push(c)}else{out.push_str(&"\\".repeat(slashes));out.push(c)}slashes=0;}out.push_str(&"\\".repeat(slashes*2));out.push('"');out}
-pub struct Process{handle:Owned,pub id:u32}
+pub struct Process{handle:Rc<Owned>,pub id:u32}
 impl Process{pub fn exit_code(&self)->io::Result<Option<u32>>{if !self.has_exited()?{return Ok(None)}let mut code=0;if unsafe{GetExitCodeProcess(self.handle.0,&mut code)}==0{return Err(io::Error::last_os_error())}Ok(Some(code))}pub fn has_exited(&self)->io::Result<bool>{match unsafe{WaitForSingleObject(self.handle.0,0)}{0=>Ok(true),258=>Ok(false),_=>Err(io::Error::last_os_error())}}}
-pub struct Workers{job:Owned,stopping:bool,temp_dir:PathBuf}
+pub struct Workers{job:Owned,stopping:bool,temp_dir:PathBuf,children:Vec<Rc<Owned>>}
 impl Workers{
  pub fn new(temp_parent:&Path)->io::Result<Self>{
   if !temp_parent.is_absolute()||!temp_parent.is_dir(){return Err(io::Error::other("explicit trusted temp parent required"))}
@@ -38,7 +38,7 @@ impl Workers{
   let h=CreateJobObjectW(null(),null());if h.is_null(){return Err(io::Error::last_os_error())}let job=Owned(h);
   let mut info:ExtendedLimit=zeroed();info.basic.flags=0x2000; // KILL_ON_JOB_CLOSE; no breakaway flags
   if SetInformationJobObject(job.0,9,&info as *const _ as _,size_of::<ExtendedLimit>() as u32)==0{return Err(io::Error::last_os_error())}
-  Ok(Self{job,stopping:false,temp_dir})
+  Ok(Self{job,stopping:false,temp_dir,children:Vec::new()})
  }}
  /// Caller must authorize a trusted executable. No inherited handles or elevation.
  pub fn spawn(&mut self,exe:&Path,args:&[String],cwd:&Path)->io::Result<Process>{
@@ -66,13 +66,14 @@ impl Workers{
    let mut si:StartupEx=zeroed();si.startup.cb=size_of::<StartupEx>() as u32;si.attributes=attr.0;let mut pi:ProcessInfo=zeroed();
    // Creation-time membership: no unowned suspended-child assignment/resume gap or fallback.
    if CreateProcessW(path.as_ptr(),command.as_mut_ptr(),null(),null(),0,0x00080000|0x00000400,env.as_ptr() as _,cwd_w.as_ptr(),&si.startup,&mut pi)==0{return Err(io::Error::last_os_error())}
-   let process=Owned(pi.process);let _primary=Owned(pi.thread);
+   let process=Rc::new(Owned(pi.process));let _primary=Owned(pi.thread);
+   self.children.push(Rc::clone(&process));
    Ok(Process{handle:process,id:pi.pid})
   }
  }
  pub fn temp_path(&self)->&Path{&self.temp_dir}
  pub fn active(&self)->io::Result<u32>{unsafe{let mut a:Accounting=zeroed();if QueryInformationJobObject(self.job.0,1,&mut a as *mut _ as _,size_of::<Accounting>() as u32,null_mut())==0{return Err(io::Error::last_os_error())}Ok(a.active)}}
  /// Fences new launches before terminating only this job; success requires observed zero workers.
- pub fn exit(&mut self)->io::Result<()>{self.stopping=true;if unsafe{TerminateJobObject(self.job.0,0)}==0{return Err(io::Error::last_os_error())}let until=Instant::now()+Duration::from_secs(3);loop{if self.active()?==0{return Ok(())}if Instant::now()>=until{return Err(io::Error::other("worker shutdown unconfirmed"))}thread::sleep(Duration::from_millis(10));}}
+ pub fn exit(&mut self)->io::Result<()>{self.stopping=true;if unsafe{TerminateJobObject(self.job.0,0)}==0{return Err(io::Error::last_os_error())}let until=Instant::now()+Duration::from_secs(3);loop{let mut signaled=true;for child in &self.children{match unsafe{WaitForSingleObject(child.0,0)}{0=>{},258=>signaled=false,_=>return Err(io::Error::last_os_error())}}if signaled&&self.active()?==0{return Ok(())}if Instant::now()>=until{return Err(io::Error::other("worker shutdown unconfirmed"))}thread::sleep(Duration::from_millis(10));}}
 }
 impl Drop for Workers{fn drop(&mut self){self.stopping=true;unsafe{TerminateJobObject(self.job.0,1);}}}

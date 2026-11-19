@@ -7,3 +7,6 @@ Tests exercise disposable helper/grandchild cleanup, unrelated helper survival, 
 Supervisor crash/failure injection, nested-job behavior, tray lifecycle, browser-native shim authority, real Recycle Bin restore and direct client admission remain open. Drop is best-effort; confirmed explicit Exit requires observed zero active workers. Temporary folders are preserved, not recursively deleted. No performance advantage claimed.
 
 API references: https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects and https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute .
+
+## Windows CI correction
+The first Windows Server 2025 run (44633974930, commit6d7be6) compiled and executed three tests: two passed; explicit descendant Exit failed because job active-count zero preceded direct-child handle signaling. Exit now retains owned process handles and requires all direct children signaled plus job active-count zero within the existing deadline. The original assertion remains; added dropped-caller-handle coverage. Check the latest exact-commit CI result before treating these tests as passed. No broader installer/client readiness follows.
