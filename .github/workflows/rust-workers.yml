@@ -1,0 +1,33 @@
+name: Reviewed Rust worker Windows acceptance
+on:
+  push:
+    branches: ['review/rust-owned-workers']
+  pull_request:
+    paths: ['windows-backend/**', '.github/workflows/rust-workers.yml']
+permissions:
+  contents: read
+jobs:
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install pinned official Rust toolchain using runner rustup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          rustc +1.99.1 --version
+          if ($LASTEXITCODE -ne 0) { throw 'Rust version check failed' }
+      - name: Run actual disposable Windows worker lifecycle tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo +1.99.1 test --locked --manifest-path windows-backend/Cargo.toml --test windows_acceptance -- --nocapture --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows tests failed' }
+# No upload/release/signing/service/listener/deployment/secrets or owner-PC access.
+# Does not test tray/browser/recycle/dot admission or actual authenticated transport.
+# Preserve existing Python workflow and require fresh head/diff review before use.
