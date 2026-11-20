@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! Test-only native file-dialog acceptance; no production source changes.
+//! Native file-dialog acceptance on disposable fixtures.
 use std::{ffi::c_void,process::Child,time::{Duration,Instant},thread,ptr};
 mod support;
 type H=*mut c_void;
@@ -61,14 +61,35 @@ fn dismiss_notice(pid:u32,dialog:H){
  post(dialog,0x111,id as usize,button as isize);
 }
 struct Guard(Child);impl Drop for Guard{fn drop(&mut self){if self.0.try_wait().ok().flatten().is_none(){let _=self.0.kill();let _=self.0.wait();}}}
-#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){
+#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){ file_dialog_case(false); }
+#[test]fn disconnected_file_dialog_cannot_capture_stale_selection(){ file_dialog_case(true); }
+fn file_dialog_case(disconnect_while_open:bool){
  let dir=std::env::temp_dir().join(format!("owner-dialog-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let path=dir.join("fixture.txt");std::fs::write(&path,b"native dialog fixture").unwrap();
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"owner-window",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");
  post(h,0x111,1,0);until(pid,"choose-dialog",||!find(pid,"#32770").is_null());let dialog=find(pid,"#32770");let deadline=Instant::now()+Duration::from_secs(8);let field=loop{let f=field(dialog,pid);if !f.h.is_null(){let edit=editable(f.h,pid);if !edit.is_null(){break edit}}assert!(Instant::now()<deadline,"native filename control missing; class/id metadata only: {:?}",f.seen);thread::sleep(Duration::from_millis(20));};
  use std::os::windows::ffi::OsStrExt;let value:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();let mut result=0;unsafe{SetLastError(0);}let sent=unsafe{SendMessageTimeoutW(field,0xc,0,value.as_ptr() as isize,2,2000,&mut result)};let set_error=unsafe{GetLastError()};let mut observed=vec![0u16;32768];let mut length=0;unsafe{SetLastError(0);}let read=unsafe{SendMessageTimeoutW(field,0xd,observed.len(),observed.as_mut_ptr() as isize,2,2000,&mut length)};let read_error=unsafe{GetLastError()};let exact=length<observed.len()&&observed[..length]==value[..value.len()-1];
  // Bounded metadata only: no field contents, paths or secrets in diagnostics.
  eprintln!("filename diagnostics: sent={sent} result={result} set_error={set_error} read={read} read_error={read_error} count={length} exact={exact} id={} enabled={} visible={} style={:#x}",unsafe{GetDlgCtrlID(field)},unsafe{IsWindowEnabled(field)},unsafe{IsWindowVisible(field)},unsafe{GetWindowLongPtrW(field,-16)});
- assert_ne!(sent,0,"WM_SETTEXT dispatch failed");assert_ne!(result,0,"filename Edit refused WM_SETTEXT");assert_ne!(read,0,"WM_GETTEXT dispatch failed");assert!(length<observed.len());assert!(exact,"filename readback differs");post(dialog,0x111,1,0);
+ assert_ne!(sent,0,"WM_SETTEXT dispatch failed");assert_ne!(result,0,"filename Edit refused WM_SETTEXT");assert_ne!(read,0,"WM_GETTEXT dispatch failed");assert!(length<observed.len());assert!(exact,"filename readback differs");
+ if disconnect_while_open {
+  // Synchronously process Disconnect inside the modal file dialog's message loop.
+  // Require success and the owner still being disconnected before confirming Open.
+  let mut acknowledged=0;
+  assert_ne!(unsafe{SendMessageTimeoutW(h,0x111,4,0,2,2000,&mut acknowledged)},0,"Disconnect dispatch failed");
+  assert!(text(h).contains("disconnected"));
+ }
+ post(dialog,0x111,1,0);
+ if disconnect_while_open {
+  until(pid,"stale-selection-dismissed",||find(pid,"#32770").is_null());
+  // A stale dialog must not retain readable file data or create a new read grant.
+  post(h,0x111,3,0);until(pid,"stale-selection-refused",||!find(pid,"#32770").is_null());
+  let refusal=find(pid,"#32770");assert!(content(refusal).contains("Choose a bounded UTF-8 file first"));
+  dismiss_notice(pid,refusal);until(pid,"stale-refusal-dismissed",||find(pid,"#32770").is_null());
+  assert!(text(h).contains("disconnected"));
+  post(h,0x111,5,0);until(pid,"stale-owner-exited",||owner.0.try_wait().unwrap().is_some());
+  assert!(owner.0.try_wait().unwrap().unwrap().success());
+  assert_eq!(std::fs::read(&path).unwrap(),b"native dialog fixture");std::fs::remove_dir_all(dir).unwrap();return;
+ }
  until(pid,"selected-notice",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains("Nothing shared yet")});let notice=find(pid,"#32770");assert!(content(notice).contains("21 bytes"));dismiss_notice(pid,notice);until(pid,"selected-notice-dismissed",||find(pid,"#32770").is_null());
  // Selecting alone never opens a grant; an explicit read confirmation remains necessary.
  assert!(text(h).contains("disconnected"));post(h,0x111,3,0);until(pid,"read-permission",||!find(pid,"#32770").is_null());let permission=find(pid,"#32770");assert!(content(permission).contains("fixture.txt"));post(unsafe{GetDlgItem(permission,7)},0xf5,0,0);until(pid,"read-permission-dismissed",||find(pid,"#32770").is_null());assert!(text(h).contains("disconnected"));
