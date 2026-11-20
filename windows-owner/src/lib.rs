@@ -32,6 +32,31 @@ impl Owner{
  }
  }
 
+ /// Private local diagnostic integration, not GUI approval or host registration.
+ /// Caller must obtain consent to the exact snapshot and fixed trusted bridge.
+ /// The child consumes a single snapshot in memory and emits NO snapshot output.
+ pub fn launch_local_snapshot_probe<F>(&mut self,bridge:&Path,snapshot:Vec<u8>,approve:F)->io::Result<()>
+ where F:FnOnce(PeerInfo,Instant,Stop)->io::Result<bool>+Send+'static {
+  if self.active.is_some()||self.owned_worker.is_some()||self.fenced{return Err(io::Error::other("disconnect before probe"))}
+  let expected=std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+  let bound=expected.clone();
+  let pipe=self.allow_paired(Some(snapshot),move|peer,deadline,stop|{
+   // The suspended child is contained before launch returns. Wait for its PID
+   // publication, never approve an arbitrary first connector during that gap.
+   let until=deadline.min(Instant::now()+Duration::from_secs(2));
+   let pid=loop{let pid=bound.load(std::sync::atomic::Ordering::Acquire);if pid!=0{break pid}
+    if stop.stopped()||Instant::now()>=until{return Ok(false)}thread::sleep(Duration::from_millis(1));};
+   if peer.pid!=pid{return Ok(false)}approve(peer,deadline,stop)
+  })?;
+  let args=vec!["--owner-local-probe".into(),pipe,std::process::id().to_string()];
+  if let Err(e)=self.launch_owned_worker(bridge,&args){let _=self.disconnect();return Err(e)}
+  expected.store(self.owned_worker.as_ref().unwrap().pid(),std::sync::atomic::Ordering::Release);Ok(())
+ }
+ /// Nonblocking diagnostic completion; no content is returned or forwarded.
+ pub fn local_worker_exit_code(&self)->io::Result<Option<u32>>{
+  match self.owned_worker.as_ref(){Some(worker)=>worker.exit_code(),None=>Ok(None)}
+ }
+
  /// Internal handoff only. The native UI never prints or persists the bearer.
  pub fn allow_once(&mut self,snapshot:Option<Vec<u8>>)->io::Result<(String,[u8;32])>{
  if self.active.is_some()||self.fenced{return Err(io::Error::other("disconnect before another grant"))}

@@ -25,7 +25,7 @@ impl Drop for Handle { fn drop(&mut self) { unsafe { CloseHandle(self.0); } } }
 /// Owns only a newly created worker, never an existing client/browser/host.
 /// Closing the job kills all descendants, including when the tray process exits.
 /// No automatic restart: after stop this value cannot launch anything.
-pub struct OwnedWorker { job:Handle, process:Handle, stopped:bool }
+pub struct OwnedWorker { job:Handle, process:Handle, pid:u32, stopped:bool }
 impl OwnedWorker {
  /// Start a fixed trusted executable suspended, contain it BEFORE any code executes,
  /// then resume. Arguments use Windows CRT quoting; no shell is invoked.
@@ -56,7 +56,7 @@ impl OwnedWorker {
     if TerminateJobObject(job.0,1)==0 || WaitForSingleObject(process.0,2000)!=0 {return Err(io::Error::other("contained worker cleanup unconfirmed; owner must remain fenced"))}
     return Err(error);
    }
-   Ok(Self{job,process,stopped:false})
+   Ok(Self{job,process,pid:p.pid,stopped:false})
   }
  }
  /// Idempotent bounded cleanup. Failure must fence the owner from new launches.
@@ -74,6 +74,12 @@ impl OwnedWorker {
    }
   }
   self.stopped=true; Ok(())
+ }
+ pub fn pid(&self)->u32 {self.pid}
+ pub fn exit_code(&self)->io::Result<Option<u32>> {
+  if self.is_running(){return Ok(None)}
+  unsafe extern "system" {fn GetExitCodeProcess(process:H,code:*mut u32)->i32;}
+  let mut code=0;if unsafe{GetExitCodeProcess(self.process.0,&mut code)}==0{return Err(io::Error::last_os_error())}Ok(Some(code))
  }
  pub fn is_running(&self)->bool {unsafe {WaitForSingleObject(self.process.0,0)==0x102}}
 }

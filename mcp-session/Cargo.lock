@@ -14,8 +14,16 @@ name = "computer-link-mcp-session"
 version = "0.1.0"
 dependencies = [
  "computer-link-local-transport",
+ "computer-link-owner-proof",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "computer-link-owner-proof"
+version = "0.1.0"
+dependencies = [
+ "computer-link-local-transport",
 ]
 
 [[package]]

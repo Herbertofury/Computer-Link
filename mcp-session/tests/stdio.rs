@@ -59,4 +59,14 @@ fn lines(r:&Output)->Vec<serde_json::Value>{String::from_utf8(r.stdout.clone()).
     #[test]fn actual_owner_revocation_before_grant_never_exposes_snapshot(){refused(Policy::Revoke,Some(b"PRIVATE-SYNTHETIC-BYTES".to_vec()));}
     #[test]fn actual_wrong_owner_pid_never_exposes_snapshot(){refused(Policy::WrongOwner,Some(b"PRIVATE-SYNTHETIC-BYTES".to_vec()));}
     #[test]fn actual_missing_snapshot_capability_is_refused(){refused(Policy::Allow,None);}
+    #[test]fn local_probe_never_prints_snapshot(){
+        for allow in [true,false]{
+            let server=Server::new(Duration::from_secs(5)).unwrap();let(pipe,_)=server.pairing();
+            let server_thread=thread::spawn(move||server.serve_paired(Some(b"PRIVATE-SYNTHETIC-BYTES".to_vec()),move|_,_,_|Ok(allow)));
+            let r=run(&["--owner-local-probe",&pipe,&std::process::id().to_string()],"");
+            assert_eq!(r.status.success(),allow);assert!(r.stdout.is_empty());
+            assert!(!String::from_utf8_lossy(&r.stderr).contains("PRIVATE-SYNTHETIC-BYTES"));
+            assert!(server_thread.join().is_ok());
+        }
+    }
 }
