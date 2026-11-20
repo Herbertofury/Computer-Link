@@ -1,6 +1,7 @@
 #![cfg(windows)]
 pub mod window_inventory;
 pub mod owned_worker;
+pub mod stdio_pipe;
 pub mod folder_inventory;
 pub mod browser_handoff;
 use std::{io,thread::{self,JoinHandle},time::{Duration,Instant},path::Path,fs::OpenOptions,os::windows::fs::{OpenOptionsExt,MetadataExt},io::Read};
@@ -30,6 +31,19 @@ impl Owner{
  Ok(worker)=>{self.owned_worker=Some(worker);Ok(())},
  Err(e)=>{self.fenced=true;Err(e)} // Conservative: even launch errors require owner exit.
  }
+ }
+
+ /// Internal host-routing groundwork: a live, Job-owned, local status-only MCP
+ /// session. The only recipient is this owner process; caller MUST NOT forward
+ /// these handles to an external host. No snapshot/desktop/file capability.
+ /// Use off the UI thread: these are blocking pipes. Disconnect closes the child
+ /// sides even if the parent still holds its handles; no background relaunch.
+ pub fn launch_local_status_session(&mut self,bridge:&Path)->io::Result<stdio_pipe::LocalStdio>{
+  if self.active.is_some()||self.owned_worker.is_some()||self.fenced{return Err(io::Error::other("disconnect before session"))}
+  match owned_worker::OwnedWorker::launch_status_stdio(bridge){
+   Ok((worker,io))=>{self.owned_worker=Some(worker);Ok(io)},
+   Err(e)=>{self.fenced=true;Err(e)}
+  }
  }
 
  /// Private local diagnostic integration, not GUI approval or host registration.

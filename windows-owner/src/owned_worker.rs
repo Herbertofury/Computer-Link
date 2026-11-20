@@ -3,6 +3,7 @@
 use std::{ffi::c_void, io, mem, os::windows::ffi::OsStrExt, path::Path, ptr};
 type H = *mut c_void;
 #[repr(C)] struct Startup { size:u32, reserved:*mut u16, desktop:*mut u16, title:*mut u16, x:u32,y:u32,xsize:u32,ysize:u32,xchars:u32,ychars:u32,fill:u32,flags:u32,show:u16,reserved2:u16,bytes:*mut u8,input:H,output:H,error:H }
+#[repr(C)] struct ExtendedStartup { base:Startup, attributes:*mut c_void }
 #[repr(C)] struct Process { process:H,thread:H,pid:u32,tid:u32 }
 #[repr(C)] struct BasicLimit { process_time:i64,job_time:i64,flags:u32,min:usize,max:usize,active:u32,affinity:usize,priority:u32,scheduling:u32 }
 #[repr(C)] struct Accounting { times:[i64;4], faults:u32, total:u32, active:u32, terminated:u32 }
@@ -32,6 +33,15 @@ impl OwnedWorker {
  /// This primitive deliberately has no stdio inheritance. MCP pipe routing and
  /// destination-aware consent must be designed before using it for a live bridge.
  pub fn launch(executable:&Path,args:&[String])->io::Result<Self> {
+  Self::launch_inner(executable,args,None)
+ }
+ /// Internal local-only status session. No snapshot authority or external host.
+ pub(crate) fn launch_status_stdio(executable:&Path)->io::Result<(Self, super::stdio_pipe::LocalStdio)> {
+  let mut pipes=super::stdio_pipe::Pipes::new()?;
+  let worker=Self::launch_inner(executable,&["--status-only".into()],Some(&mut pipes))?;
+  Ok((worker,pipes.into_parent()))
+ }
+ fn launch_inner(executable:&Path,args:&[String],mut pipes:Option<&mut super::stdio_pipe::Pipes>)->io::Result<Self> {
   if !executable.is_absolute() { return Err(io::Error::other("absolute worker executable required")); }
   let app=wide(executable.as_os_str())?;
   let mut command=quote(executable.as_os_str())?;
@@ -43,8 +53,15 @@ impl OwnedWorker {
    let mut limits:ExtendedLimit=mem::zeroed(); limits.basic.flags=0x2000; // KILL_ON_JOB_CLOSE; no breakaway
    if SetInformationJobObject(job.0,9,&limits as *const _ as _,mem::size_of_val(&limits) as u32)==0 { return Err(io::Error::last_os_error()); }
    let mut startup:Startup=mem::zeroed(); startup.size=mem::size_of_val(&startup) as u32;
+   let mut extended;
+   let (start,inherit,flags)=if let Some(p)=pipes.as_mut(){
+    extended=ExtendedStartup{base:startup,attributes:p.attributes()};
+    extended.base.size=mem::size_of::<ExtendedStartup>() as u32;extended.base.flags=0x100;
+    let handles=p.child_handles();extended.base.input=handles[0];extended.base.output=handles[1];extended.base.error=handles[2];
+    (&extended.base as *const Startup,1,0x08080004)
+   }else{(&startup as *const Startup,0,0x08000004)};
    let mut p:Process=mem::zeroed();
-   if CreateProcessW(app.as_ptr(),command.as_mut_ptr(),ptr::null(),ptr::null(),0,0x08000004,ptr::null(),ptr::null(),&startup,&mut p)==0{return Err(io::Error::last_os_error())}
+   if CreateProcessW(app.as_ptr(),command.as_mut_ptr(),ptr::null(),ptr::null(),inherit,flags,ptr::null(),ptr::null(),start,&mut p)==0{return Err(io::Error::last_os_error())}
    let process=Handle(p.process); let thread=Handle(p.thread);
    if AssignProcessToJobObject(job.0,process.0)==0 {
     let error=io::Error::last_os_error();
@@ -132,6 +149,37 @@ fn quote(s:&std::ffi::OsStr)->io::Result<Vec<u16>> {
    if a.active>=2{break}assert!(std::time::Instant::now()<deadline,"child did not start");std::thread::sleep(std::time::Duration::from_millis(5));
   }
   tree.stop().unwrap();assert!(!tree.is_running());assert!(unrelated.is_running());unrelated.stop().unwrap();
+ }
+ #[test] fn stdio_handle_list_excludes_unrelated_inheritable_handle(){
+  use std::io::Write;
+  #[repr(C)]struct Security{size:u32,descriptor:*mut c_void,inherit:i32}
+  unsafe extern "system"{fn CreateEventW(attrs:*const Security,manual:i32,initial:i32,name:*const u16)->H;}
+  let attrs=Security{size:mem::size_of::<Security>() as u32,descriptor:ptr::null_mut(),inherit:1};
+  let name=format!("Local\\computer-link-handle-test-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+  let name_wide=wide(std::ffi::OsStr::new(&name)).unwrap();
+  let event=Handle(unsafe{CreateEventW(&attrs,1,0,name_wide.as_ptr())});assert!(!event.0.is_null());
+  let mut pipes=super::super::stdio_pipe::Pipes::new().unwrap();
+  let args=vec!["--exact".into(),"owned_worker::tests::handle_list_fixture".into(),"--ignored".into(),"--nocapture".into()];
+  let mut worker=OwnedWorker::launch_inner(&std::env::current_exe().unwrap(),&args,Some(&mut pipes)).unwrap();
+  let mut io=pipes.into_parent();writeln!(io.input,"{}\n{}",event.0 as usize,name).unwrap();drop(io.input);
+  assert_eq!(unsafe{WaitForSingleObject(worker.process.0,5000)},0,"handle fixture timed out");
+  assert_eq!(worker.exit_code().unwrap(),Some(0));worker.stop().unwrap();
+ }
+ #[test] #[ignore] fn handle_list_fixture(){
+  let mut value=String::new();std::io::stdin().read_line(&mut value).unwrap();
+  let handle=value.trim().parse::<usize>().unwrap() as H;
+  let mut name=String::new();std::io::stdin().read_line(&mut name).unwrap();
+  unsafe extern "system"{fn OpenEventW(access:u32,inherit:i32,name:*const u16)->H;fn CompareObjectHandles(first:H,second:H)->i32;fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;}
+  let mut observed=ptr::null_mut();
+  let me=unsafe{GetCurrentProcess()};
+  if unsafe{DuplicateHandle(me,handle,me,&mut observed,0,0,2)}==0 {
+   assert_eq!(io::Error::last_os_error().raw_os_error(),Some(6));return;
+  }
+  let observed=Handle(observed);
+  let name=wide(std::ffi::OsStr::new(name.trim())).unwrap();
+  let known=Handle(unsafe{OpenEventW(0x100000,0,name.as_ptr())});assert!(!known.0.is_null());
+  // Compare identity, not numeric validity: startup may recycle the old number.
+  assert_eq!(unsafe{CompareObjectHandles(observed.0,known.0)},0,"unrelated inheritable event leaked");
  }
  #[test] #[ignore] fn branch_fixture(){
   let mut child=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","owned_worker::tests::sleep_fixture","--ignored"]).spawn().unwrap();
