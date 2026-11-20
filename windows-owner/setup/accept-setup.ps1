@@ -6,10 +6,13 @@ Write-Output ('Installed ISCC file version: ' + $compilerVersion)
 # ISCC's executable resource can be 0.0.0.0; gate the actual engine banner before executing setup.
 $root = Join-Path $env:RUNNER_TEMP ('computer-link-setup-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
+$binaries = @('computer-link-owner-proof.exe','local-client.exe','computer-link-mcp-session.exe')
+if (-not $env:CARGO_TARGET_DIR -or -not [IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) { throw 'An explicit absolute shared CARGO_TARGET_DIR is required; no build-tree fallback' }
+$debug = Join-Path $env:CARGO_TARGET_DIR 'debug'
 $stage = Join-Path $root 'payload'
 New-Item -ItemType Directory -Path $stage | Out-Null
-foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
-  Copy-Item -LiteralPath (Join-Path 'windows-owner/target/debug' $name) -Destination $stage
+foreach ($name in $binaries) {
+  Copy-Item -LiteralPath (Join-Path $debug $name) -Destination $stage
 }
 $recipe = Join-Path $PSScriptRoot 'computer-link.iss'
 # Consume output without retaining or publishing compiler paths/licensee text.
@@ -39,7 +42,7 @@ function Run-Owned([string]$exe, [string[]]$arguments) {
 }
 $arguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$destination")
 if ((Run-Owned $setup $arguments) -ne 0) { throw 'Disposable setup failed' }
-foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
+foreach ($name in $binaries) {
   if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Installed bytes differ from tested binaries' }
 }
 # Re-run the real GUI workflows against installed bytes, with installed-folder CWD.
@@ -48,13 +51,15 @@ $previousTestDirectory = $env:COMPUTER_LINK_TEST_INSTALLED_DIR
 try {
   $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $destination
   & cargo +1.99.1 test --locked --manifest-path windows-owner/Cargo.toml --test gui --test selection -- --test-threads=1 --nocapture
-  if ($LASTEXITCODE -ne 0) { throw 'Installed native GUI/selection acceptance failed' }
+  if ($LASTEXITCODE -ne 0) { throw 'Installed native GUI/selection/export acceptance failed' }
+  & cargo +1.99.1 test --locked --manifest-path windows-owner/Cargo.toml --test probe_gui -- --ignored --test-threads=1 --nocapture
+  if ($LASTEXITCODE -ne 0) { throw 'Installed native snapshot/status MCP acceptance failed' }
 } finally {
   $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $previousTestDirectory
 }
-Write-Output 'Installed executable GUI, pairing, selection, cancellation and Exit acceptance passed.'
-# Verify the workflows did not alter either installed program.
-foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
+Write-Output 'Installed executable GUI, pairing, selection, create-new export, MCP snapshot/status, cancellation and Exit acceptance passed.'
+# Verify the workflows did not alter any installed program.
+foreach ($name in $binaries) {
   if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Installed GUI tests changed program bytes' }
 }
 $marker = Join-Path $destination 'unrelated-synthetic-user-data.txt'
@@ -64,13 +69,13 @@ if ((Run-Owned $setup ($arguments + @('/LOG=' + $refusalLog))) -eq 0) { throw 'E
 if ((Get-Item -LiteralPath $refusalLog).Length -gt 1048576) { throw 'Refusal log exceeds test bound' }
 if (-not ([IO.File]::ReadAllText($refusalLog).Contains('Choose a new destination folder. Existing folders are refused'))) { throw 'Reinstall failed without expected preservation refusal' }
 if ([IO.File]::ReadAllText($marker) -ne 'preserve-this-fixture') { throw 'Reinstall changed unrelated fixture' }
-foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
+foreach ($name in $binaries) {
   if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Rejected reinstall changed installed program bytes' }
 }
 $uninstaller = Join-Path $destination 'unins000.exe'
 if ((Run-Owned $uninstaller @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART')) -ne 0) { throw 'Disposable uninstall failed' }
 if ([IO.File]::ReadAllText($marker) -ne 'preserve-this-fixture') { throw 'Uninstall changed unrelated fixture' }
-foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
+foreach ($name in $binaries) {
   if (Test-Path -LiteralPath (Join-Path $destination $name)) { throw 'Program file still present after uninstall' }
 }
 Write-Output 'Disposable setup, exact installed bytes, existing-folder refusal and unrelated-data preservation passed. No artifact uploaded.'

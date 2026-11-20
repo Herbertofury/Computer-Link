@@ -27,6 +27,7 @@ InfoBeforeFile=SETUP-NOTICE.txt
 [Files]
 Source: "{#PayloadDir}\computer-link-owner-proof.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\local-client.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\computer-link-mcp-session.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "SETUP-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Run]
 Filename: "{app}\computer-link-owner-proof.exe"; Description: "Open experimental local preview (does not connect ChatGPT)"; Flags: postinstall nowait skipifsilent unchecked

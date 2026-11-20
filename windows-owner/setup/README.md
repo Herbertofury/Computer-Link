@@ -31,5 +31,27 @@ each with a fresh owner process and all five denial/allow/wrong-operation/late-c
 peer-exit cases. It stops on the first failure, retains diagnostics in the CI log and
 never retries a failed iteration. Existing assertions and five-second deadlines are
 unchanged. This is a serial sample on one disposable runner, not concurrency, native
-click accessibility, root-cause proof, or a statistical reliability guarantee. The
-whole job retains its ten-minute timeout and uploads no artifacts.
+click accessibility, root-cause proof, or a statistical reliability guarantee. That historical
+job used a ten-minute timeout and uploaded no artifacts; the integrated candidate
+below has a fifteen-minute bound.
+
+## Integrated installer candidate (2026-11-20, pending Windows acceptance)
+The old two-executable payload omitted `computer-link-mcp-session.exe`, so the
+installed owner could not run its sibling-dependent status session or snapshot
+probe. The candidate now stages all three executables from an explicit shared
+absolute `CARGO_TARGET_DIR`, packages the MCP sibling, and verifies all three
+hashes after install, installed acceptance, and refused reinstall. Uninstall must
+remove all three while preserving an unrelated synthetic user-data file.
+
+Source-only isolated branch `review/windows-integrated-setup` builds/tests local
+export, MCP and owner, then compiles and installs into a disposable runner folder.
+Installed acceptance repeats GUI + selection (including exact-preview new-file
+export) and the explicitly ignored probe/status tests, with no build-tree fallback.
+The script restores its test-only routing variable even on test failure. The
+notice now describes local create-new export and post-admission cancellation
+limits, replacing obsolete no-write and failed-file-dialog statements.
+
+No owner install, distributed installer, signing, remote endpoint, browser/ChatGPT
+control or external grant is added. Native Windows execution of this updated
+installer is pending; Linux/static checks are not a substitute. Historical evidence
+above remains historical, not acceptance of this candidate.
