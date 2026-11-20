@@ -31,15 +31,17 @@ fn dialog_body(h:H,pid:u32)->String{let mut s=Texts{pid,text:String::new(),faile
 fn wait_no_dialog(owner:&mut Child){let end=Instant::now()+Duration::from_secs(5);while !window(owner.id(),"#32770").is_null(){assert!(owner.try_wait().unwrap().is_none());assert!(Instant::now()<end,"owned dialog remained open");thread::sleep(Duration::from_millis(20));}}
 // A dialog can be enumerated before its controls exist. PostMessageW(NULL,...)
 // succeeds by targeting the caller thread, silently losing a premature BM_CLICK.
+#[track_caller]
 fn ready_dialog_button(owner:&mut Child,dialog:H,id:i32,end:Instant)->H{
  loop{
   assert!(owner.try_wait().unwrap().is_none(),"owner exited before button ready");
   let b=unsafe{GetDlgItem(dialog,id)};let mut pid=0;
   if !b.is_null(){unsafe{GetWindowThreadProcessId(b,&mut pid);}}
   if !b.is_null()&&pid==owner.id()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{return b}
-  assert!(Instant::now()<end,"dialog button not ready");thread::sleep(Duration::from_millis(20));
+  assert!(Instant::now()<end,"dialog button {id} not ready; title={}",title(dialog));thread::sleep(Duration::from_millis(20));
  }
 }
+#[track_caller]
 fn click_dialog_button(owner:&mut Child,dialog:H,id:i32){
  let button=ready_dialog_button(owner,dialog,id,Instant::now()+Duration::from_secs(5));
  post(button,0xf5,0,0);
