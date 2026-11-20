@@ -1,5 +1,6 @@
 #![cfg(windows)]
 pub mod window_inventory;
+pub mod owned_worker;
 pub mod folder_inventory;
 pub mod browser_handoff;
 use std::{io,thread::{self,JoinHandle},time::{Duration,Instant},path::Path,fs::OpenOptions,os::windows::fs::{OpenOptionsExt,MetadataExt},io::Read};
@@ -18,9 +19,19 @@ pub fn snapshot(path:&Path)->io::Result<Vec<u8>>{
  let mut i:Info=unsafe{std::mem::zeroed()};if unsafe{GetFileInformationByHandle(f.as_raw_handle(),&mut i)}==0||i.links!=1{return Err(io::Error::other("single-link handle required"))}
  let mut b=vec![];f.take(4097).read_to_end(&mut b)?;if b.len()>4096||std::str::from_utf8(&b).is_err(){return Err(io::Error::other("bounded UTF8 text required"))}Ok(b)
 }
-pub struct Owner{active:Option<(Stop,JoinHandle<io::Result<bool>>)>,fenced:bool}
-impl Default for Owner{fn default()->Self{Self{active:None,fenced:false}}}
+pub struct Owner{owned_worker:Option<owned_worker::OwnedWorker>,active:Option<(Stop,JoinHandle<io::Result<bool>>)>,fenced:bool}
+impl Default for Owner{fn default()->Self{Self{owned_worker:None,active:None,fenced:false}}}
 impl Owner{
+ /// Internal lifecycle primitive only; not exposed through the UI or MCP. The
+ /// caller must provide a fixed trusted executable after destination consent.
+ pub fn launch_owned_worker(&mut self,executable:&Path,args:&[String])->io::Result<()>{
+ if self.owned_worker.is_some()||self.fenced{return Err(io::Error::other("disconnect before another worker"))}
+ match owned_worker::OwnedWorker::launch(executable,args){
+ Ok(worker)=>{self.owned_worker=Some(worker);Ok(())},
+ Err(e)=>{self.fenced=true;Err(e)} // Conservative: even launch errors require owner exit.
+ }
+ }
+
  /// Internal handoff only. The native UI never prints or persists the bearer.
  pub fn allow_once(&mut self,snapshot:Option<Vec<u8>>)->io::Result<(String,[u8;32])>{
  if self.active.is_some()||self.fenced{return Err(io::Error::other("disconnect before another grant"))}
@@ -37,15 +48,46 @@ impl Owner{
  let server=Server::new(Duration::from_secs(60))?;let name=server.pairing().0;let stop=server.stop();let worker=thread::Builder::new().name("computer-link-paired-session".into()).spawn(move||{let result=server.serve_paired(snapshot,approve);finished();result})?;self.active=Some((stop,worker));Ok(name)
  }
  pub fn disconnect(&mut self)->io::Result<()>{
- let Some((stop,worker))=self.active.as_ref()else{return if self.fenced{Err(io::Error::other("shutdown remains unconfirmed; exit process required"))}else{Ok(())}};self.fenced=true;stop.revoke()?;
- let deadline=Instant::now()+Duration::from_secs(2);while !worker.is_finished(){if Instant::now()>=deadline{return Err(io::Error::other("shutdown unconfirmed; exit process required"))}thread::sleep(Duration::from_millis(5));}
- let (_,worker)=self.active.take().unwrap();match worker.join(){Err(_)=>return Err(io::Error::other("worker panicked; exit required")),Ok(Err(e)) if e.to_string().contains("process must terminate")=>return Err(e),_=>{}}
+ let previously_fenced=self.fenced;
+ let had_resources=self.active.is_some()||self.owned_worker.is_some();
+ if had_resources{self.fenced=true;}
+ let mut failure=None;
+ // Attempt BOTH cleanup paths. A failed revoke must not leave the worker running,
+ // and failed process cleanup must not leave snapshot authority live.
+ if let Some((stop,_))=self.active.as_ref(){if let Err(e)=stop.revoke(){failure=Some(e);}}
+ if let Some(worker)=self.owned_worker.as_mut(){match worker.stop(){
+  Ok(())=>{self.owned_worker.take();},Err(e)=>{failure.get_or_insert(e);}
+ }}
+ if let Some((_,worker))=self.active.as_ref(){
+  let deadline=Instant::now()+Duration::from_secs(2);
+  while !worker.is_finished()&&Instant::now()<deadline{thread::sleep(Duration::from_millis(5));}
+  if worker.is_finished(){
+   let (_,worker)=self.active.take().unwrap();match worker.join(){
+    Err(_)=>{failure.get_or_insert(io::Error::other("worker panicked; exit required"));},
+    Ok(Err(e)) if e.to_string().contains("process must terminate")=>{failure.get_or_insert(e);},_=>{}
+   }
+  }else{failure.get_or_insert(io::Error::other("shutdown unconfirmed; exit process required"));}
+ }
+ if let Some(e)=failure{self.fenced=true;return Err(e)}
+ if previously_fenced{return Err(io::Error::other("shutdown remains unconfirmed; exit process required"))}
  self.fenced=false;Ok(())
  }
+
 }
 impl Drop for Owner{fn drop(&mut self){let _=self.disconnect();}}
 #[cfg(test)]mod tests{
  use super::*;use std::io::{Read,Write};
+ #[test]fn launch_failure_fences_until_owner_exit(){
+ let mut owner=Owner::default();assert!(owner.launch_owned_worker(Path::new("relative.exe"),&[]).is_err());
+ assert!(owner.fenced);assert!(owner.allow_once(None).is_err());assert!(owner.disconnect().is_err());
+ }
+ #[test]fn disconnect_stops_owned_worker_without_relaunch(){
+ let mut owner=Owner::default();let exe=std::env::current_exe().unwrap();
+ let args=vec!["--exact".into(),"owned_worker::tests::sleep_fixture".into(),"--ignored".into()];
+ let (pipe,_)=owner.allow_once(None).unwrap();
+ owner.launch_owned_worker(&exe,&args).unwrap();assert!(owner.owned_worker.as_ref().unwrap().is_running());
+ assert!(owner.launch_owned_worker(&exe,&args).is_err());owner.disconnect().unwrap();assert!(owner.owned_worker.is_none());assert!(OpenOptions::new().read(true).write(true).open(pipe).is_err());owner.disconnect().unwrap();assert!(owner.owned_worker.is_none());
+ }
  #[test]fn consent_snapshot_roundtrip_disconnect_restart(){let mut o=Owner::default();let(name,token)=o.allow_once(Some(b"approved snapshot".to_vec())).unwrap();assert!(o.allow_once(None).is_err());let mut f=OpenOptions::new().read(true).write(true).open(&name).unwrap();let mut r=token.to_vec();r.push(2);f.write_all(&r).unwrap();let mut len=[0;4];f.read_exact(&mut len).unwrap();let mut b=vec![0;u32::from_be_bytes(len) as usize];f.read_exact(&mut b).unwrap();assert_eq!(b,b"approved snapshot");drop(f);o.disconnect().unwrap();assert!(OpenOptions::new().read(true).write(true).open(name).is_err());o.allow_once(None).unwrap();o.disconnect().unwrap();}
  #[test]fn uncertain_completion_stays_fenced_across_repeated_disconnect(){let mut o=Owner::default();let server=Server::new(Duration::from_secs(3)).unwrap();let stop=server.stop();drop(server);o.active=Some((stop,thread::spawn(||Err(io::Error::other("cancel unconfirmed; process must terminate before restart")))));assert!(o.disconnect().is_err());assert!(o.active.is_none());assert!(o.fenced);assert!(o.disconnect().unwrap_err().to_string().contains("remains unconfirmed"));assert!(o.allow_once(None).is_err());}
  #[test]fn actual_file_snapshot_is_bounded_and_immutable(){let dir=std::env::temp_dir().join(format!("owner-snapshot-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let file=dir.join("chosen.txt");std::fs::write(&file,b"first").unwrap();let captured=snapshot(&file).unwrap();std::fs::write(&file,b"second").unwrap();assert_eq!(captured,b"first");std::fs::write(&file,vec![0;4097]).unwrap();assert!(snapshot(&file).is_err());std::fs::write(&file,[255]).unwrap();assert!(snapshot(&file).is_err());std::fs::write(&file,b"valid").unwrap();std::fs::hard_link(&file,dir.join("alias.txt")).unwrap();assert_eq!(snapshot(&file).unwrap_err().to_string(),"single-link handle required");assert_eq!(std::fs::read(&file).unwrap(),b"valid");std::fs::remove_dir_all(dir).unwrap();}
