@@ -14,7 +14,7 @@ type H=*mut c_void;
  fn GetMessageW(m:*mut Msg,h:H,min:u32,max:u32)->i32;
  fn TranslateMessage(m:*const Msg)->i32;fn DispatchMessageW(m:*const Msg)->isize;
  fn SendMessageW(h:H,m:u32,w:usize,l:isize)->isize;
- fn GetDlgItem(h:H,id:i32)->H;fn SetFocus(h:H)->H;
+ fn GetDlgItem(h:H,id:i32)->H;fn SetFocus(h:H)->H;fn GetFocus()->H;
  fn MessageBoxW(h:H,t:*const u16,c:*const u16,f:u32)->i32;
  fn IsDialogMessageW(h:H,m:*const Msg)->i32;
 }
@@ -51,7 +51,7 @@ pub fn run(){
   if RegisterClassExW(&c)==0{return}
   let h=CreateWindowExW(0,name.as_ptr(),wide("Computer-Link local foreground selector").as_ptr(),0x10ca0000,160,160,840,420,ptr::null_mut(),ptr::null_mut(),instance,ptr::null_mut());if h.is_null(){return}ALIVE.with(|v|v.set(true));
   let make=|class:&str,title:&str,style:u32,x,y,w,ht,id|CreateWindowExW(0,wide(class).as_ptr(),wide(title).as_ptr(),0x50000000|style,x,y,w,ht,h,id as H,instance,ptr::null_mut());
-  let label=make("STATIC","Choose an observed window, then review its exact identity. Enter/Escape cancel. No automatic refresh.",0,12,12,800,36,11usize);
+  let label=make("STATIC","Visible windows. Use Tab and arrow keys to select, then focus Review and press Enter. Escape cancels.",0,12,12,800,36,11usize);
   let list=make("LISTBOX","",0x00a10001,12,52,800,260,10);
   if label.is_null()||list.is_null(){DestroyWindow(h);return}
   for target in &candidates{let row=target.description().replace('\n'," | ");if SendMessageW(list,0x180,0,wide(&row).as_ptr() as isize)<0{DestroyWindow(h);return}}
@@ -60,7 +60,13 @@ pub fn run(){
   let cancel=make("BUTTON","Cancel",0x10001,680,328,130,32,2);if review.is_null()||cancel.is_null(){DestroyWindow(h);return}SetFocus(cancel);
   let mut msg:Msg=mem::zeroed();
   while GetMessageW(&mut msg,ptr::null_mut(),0,0)>0{
-   if msg.msg==0x100&&(msg.w==13||msg.w==27){DestroyWindow(h);continue}
+   if msg.msg==0x100&&(msg.w==13||msg.w==27){
+    // Enter activates review only when the user deliberately focused its button.
+    // It never grants foreground access: the next native prompt defaults to Cancel.
+    if msg.w==13&&msg.hwnd==review&&GetFocus()==review{SendMessageW(h,0x111,3,0);}
+    else{DestroyWindow(h);}
+    continue
+   }
    if IsDialogMessageW(h,&msg)!=0{continue}TranslateMessage(&msg);DispatchMessageW(&msg);
   }
  }
