@@ -25,10 +25,10 @@ fn wait_title(child:&mut Child,h:H,part:&str){let end=Instant::now()+Duration::f
 for round in 0..2{
  let mut child=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut child.0,"ComputerLinkOwnerProof");assert!(title(h).contains("disconnected"));
  // Real owner command opens an actual native MessageBox. Denying leaves no grant.
- post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let no=unsafe{GetDlgItem(dialog,7)};assert!(!no.is_null());post(no,0xf5,0,0);
+ post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let no=ready_dialog_button(&mut child.0,dialog,7,Instant::now()+Duration::from_secs(5));assert!(!no.is_null());post(no,0xf5,0,0);
  let deadline=Instant::now()+Duration::from_secs(5);while !window(child.0.id(),"#32770").is_null(){assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(20));}assert!(title(h).contains("disconnected"));
  // A second deliberate command and Yes are required. No hidden CLI consent flag.
- post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let yes=unsafe{GetDlgItem(dialog,6)};assert!(!yes.is_null());post(yes,0xf5,0,0);wait_title(&mut child.0,h,"one local grant");
+ post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let yes=ready_dialog_button(&mut child.0,dialog,6,Instant::now()+Duration::from_secs(5));assert!(!yes.is_null());post(yes,0xf5,0,0);wait_title(&mut child.0,h,"one local grant");
  let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0x8003,0,0,2,1000,&mut ignored)},0);assert!(title(h).contains("one local grant"),"stale completion revoked a newer grant");
  post(h,0x111,4,0);wait_title(&mut child.0,h,"disconnected");
  if round==0{post(h,0x111,5,0)}else{post(h,0x10,0,0)}
@@ -44,7 +44,7 @@ fn grant_diagnostic(dialog:H,pid:u32)->GrantDiagnostic{let yes=unsafe{GetDlgItem
 fn prepare_status(child:&mut Child,h:H,case:&str)->String{
  post(h,0x111,2,0);let dialog=wait_window(child,"#32770");let end=Instant::now()+Duration::from_secs(5);
  let before=loop{let d=grant_diagnostic(dialog,child.id());if d.permission_title&&d.yes_present&&d.yes_visible&&d.yes_enabled&&d.yes_owned{break d}assert!(child.try_wait().unwrap().is_none(),"grant case {case}: owner exited before button ready");assert!(Instant::now()<end,"grant case {case}: permission button not ready; state={d:?}");thread::sleep(Duration::from_millis(20));};
- post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);
+ let yes=ready_dialog_button(child,dialog,6,end);post(yes,0xf5,0,0);
  while !title(h).contains("one local grant"){
  assert!(child.try_wait().unwrap().is_none(),"grant case {case}: owner exited");
  if Instant::now()>=end{let after=grant_diagnostic(window(child.id(),"#32770"),child.id());panic!("grant case {case}: no local grant; before={before:?}; after={after:?}")}
@@ -58,9 +58,10 @@ fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration:
  for case in ["deny","allow","wrong-op","late-yes","peer-exit"]{
  let name=prepare_status(&mut owner.0,h,case);let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
  let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
+ let response=ready_dialog_button(&mut owner.0,prompt,if case=="deny"{7}else{6},Instant::now()+Duration::from_secs(5));
  if case=="peer-exit"{client.0.kill().unwrap();client.0.wait().unwrap();}
  if case=="late-yes"{post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");}
- post(unsafe{GetDlgItem(prompt,if case=="deny"{7}else{6})},0xf5,0,0);
+ post(response,0xf5,0,0);
  if case!="peer-exit"{finish_client(&mut client.0,case=="allow");}
  let mut out=String::new();use std::io::Read;client.0.stdout.take().unwrap().read_to_string(&mut out).unwrap();if case=="allow"{assert_eq!(out.trim(),"authenticated response: 1 bytes")}else{assert!(out.is_empty())}
  wait_title(&mut owner.0,h,"disconnected");
@@ -83,37 +84,40 @@ fn dialog_body(h:H,pid:u32)->String{let mut s=Texts{pid,text:String::new(),faile
 fn wait_no_dialog(owner:&mut Child){let end=Instant::now()+Duration::from_secs(5);while !window(owner.id(),"#32770").is_null(){assert!(owner.try_wait().unwrap().is_none());assert!(Instant::now()<end,"owned dialog remained open");thread::sleep(Duration::from_millis(20));}}
 // A dialog can be enumerated before its controls exist. PostMessageW(NULL,...)
 // succeeds by targeting the caller thread, silently losing a premature BM_CLICK.
-fn click_inventory_button(owner:&mut Child,dialog:H,id:i32){
- let end=Instant::now()+Duration::from_secs(5);
- let button=loop{
-  assert!(owner.try_wait().unwrap().is_none(),"inventory owner exited before button ready");
+fn ready_dialog_button(owner:&mut Child,dialog:H,id:i32,end:Instant)->H{
+ loop{
+  assert!(owner.try_wait().unwrap().is_none(),"owner exited before button ready");
   let b=unsafe{GetDlgItem(dialog,id)};let mut pid=0;
   if !b.is_null(){unsafe{GetWindowThreadProcessId(b,&mut pid);}}
-  if !b.is_null()&&pid==owner.id()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}
-  assert!(Instant::now()<end,"inventory button not ready");thread::sleep(Duration::from_millis(20));
- };post(button,0xf5,0,0);
+  if !b.is_null()&&pid==owner.id()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{return b}
+  assert!(Instant::now()<end,"dialog button not ready");thread::sleep(Duration::from_millis(20));
+ }
+}
+fn click_dialog_button(owner:&mut Child,dialog:H,id:i32){
+ let button=ready_dialog_button(owner,dialog,id,Instant::now()+Duration::from_secs(5));
+ post(button,0xf5,0,0);
 }
 struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsafe{DestroyWindow(self.0);}}}
 #[test]fn actual_inventory_preview_keep_and_paired_read(){
  let class:Vec<u16>="STATIC\0".encode_utf16().collect();let label:Vec<u16>="computer-link-synthetic-inventory-marker\0".encode_utf16().collect();let fixture=SyntheticWindow(unsafe{CreateWindowExW(0,class.as_ptr(),label.as_ptr(),0x10000000,0,0,100,50,ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())});assert!(!fixture.0.is_null());
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
  // Deny capture, then discard a locally captured preview. Neither creates a grant.
- post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_inventory_button(&mut owner.0,d,7);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_dialog_button(&mut owner.0,d,7);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
  for keep in [false,true]{
- post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_inventory_button(&mut owner.0,d,6);
- let end=Instant::now()+Duration::from_secs(5);let preview=loop{let d=window(owner.0.id(),"#32770");if !d.is_null()&&title(d)=="Review captured window inventory"{break d}assert!(Instant::now()<end,"inventory preview not observed");thread::sleep(Duration::from_millis(20));};let body=dialog_body(preview,owner.0.id());assert!(body.contains("computer-link-synthetic-inventory-marker"),"synthetic visible window absent");let n:usize=body.split("Keep this ").nth(1).unwrap().split("-byte").next().unwrap().parse().unwrap();assert!(n>1&&n<=4096);click_inventory_button(&mut owner.0,preview,if keep{6}else{7});wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_dialog_button(&mut owner.0,d,6);
+ let end=Instant::now()+Duration::from_secs(5);let preview=loop{let d=window(owner.0.id(),"#32770");if !d.is_null()&&title(d)=="Review captured window inventory"{break d}assert!(Instant::now()<end,"inventory preview not observed");thread::sleep(Duration::from_millis(20));};let body=dialog_body(preview,owner.0.id());assert!(body.contains("computer-link-synthetic-inventory-marker"),"synthetic visible window absent");let n:usize=body.split("Keep this ").nth(1).unwrap().split("-byte").next().unwrap().parse().unwrap();assert!(n>1&&n<=4096);click_dialog_button(&mut owner.0,preview,if keep{6}else{7});wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
  if !keep{continue}
- post(h,0x111,3,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Explicit local permission");assert!(dialog_body(d,owner.0.id()).contains("captured window inventory"));click_inventory_button(&mut owner.0,d,6);wait_title(&mut owner.0,h,"one local grant");let name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ post(h,0x111,3,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Explicit local permission");assert!(dialog_body(d,owner.0.id()).contains("captured window inventory"));click_dialog_button(&mut owner.0,d,6);wait_title(&mut owner.0,h,"one local grant");let name=title(h).split(" | ").nth(1).unwrap().to_owned();
  let expected=body.split_once("\n\n").expect("preview payload separator").1.as_bytes().to_vec();assert_eq!(expected.len(),n);let owner_pid=owner.0.id();
  // This test executable is a separate client process from the owner. Keep actual
  // bytes only in memory and never print captured desktop titles on mismatch.
- let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");click_inventory_button(&mut owner.0,d,6);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");click_dialog_button(&mut owner.0,d,6);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
  // A fresh explicit grant is required for the actual packaged local-client.
  // Its intentionally redacted stdout verifies length, not content identity;
  // the independent library roundtrip above retains the exact-byte assertion.
- post(h,0x111,3,0);let grant=wait_window(&mut owner.0,"#32770");assert_eq!(title(grant),"Explicit local permission");click_inventory_button(&mut owner.0,grant,6);wait_title(&mut owner.0,h,"one local grant");let cli_name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ post(h,0x111,3,0);let grant=wait_window(&mut owner.0,"#32770");assert_eq!(title(grant),"Explicit local permission");click_dialog_button(&mut owner.0,grant,6);wait_title(&mut owner.0,h,"one local grant");let cli_name=title(h).split(" | ").nth(1).unwrap().to_owned();
  let mut cli=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
- let consent=wait_window(&mut owner.0,"#32770");assert_eq!(title(consent),"Authorize connected client");click_inventory_button(&mut owner.0,consent,6);finish_client(&mut cli.0,true);
+ let consent=wait_window(&mut owner.0,"#32770");assert_eq!(title(consent),"Authorize connected client");click_dialog_button(&mut owner.0,consent,6);finish_client(&mut cli.0,true);
  let mut output=String::new();use std::io::Read;cli.0.stdout.take().unwrap().read_to_string(&mut output).unwrap();assert!(output.trim()==format!("authenticated response: {n} bytes"),"packaged client did not report expected bounded response length");
  wait_title(&mut owner.0,h,"disconnected");
  let mut replay=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut replay.0,false);
@@ -127,7 +131,7 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  post(h,0x111,2,0);let dialog=wait_window(&mut owner.0,"#32770");
  assert_eq!(title(dialog),"Explicit local permission");
  let end=Instant::now()+Duration::from_secs(5);
- let yes=loop{let b=unsafe{GetDlgItem(dialog,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end,"permission button not ready");thread::sleep(Duration::from_millis(20));};
+ let yes=ready_dialog_button(&mut owner.0,dialog,6,end);
  // Synchronous dispatch proves Disconnect was processed before stale approval.
  let mut result=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0x111,4,0,2,3000,&mut result)},0);
  assert!(title(h).contains("disconnected"));
@@ -138,12 +142,12 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  // A fresh deliberate approval remains usable after rejecting the stale one.
  post(h,0x111,2,0);let fresh=wait_window(&mut owner.0,"#32770");
  assert_eq!(title(fresh),"Explicit local permission");
- let end=Instant::now()+Duration::from_secs(5);let yes=loop{let b=unsafe{GetDlgItem(fresh,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(20));};
+ let end=Instant::now()+Duration::from_secs(5);let yes=ready_dialog_button(&mut owner.0,fresh,6,end);
  post(yes,0xf5,0,0);wait_no_dialog(&mut owner.0);wait_title(&mut owner.0,h,"one local grant");
  let name=title(h).split(" | ").nth(1).unwrap().to_owned();
  let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap());
  let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
- let end=Instant::now()+Duration::from_secs(5);let yes=loop{let b=unsafe{GetDlgItem(prompt,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(20));};
+ let end=Instant::now()+Duration::from_secs(5);let yes=ready_dialog_button(&mut owner.0,prompt,6,end);
  post(yes,0xf5,0,0);finish_client(&mut client.0,true);
  let mut out=String::new();use std::io::Read;client.0.stdout.take().unwrap().read_to_string(&mut out).unwrap();assert_eq!(out.trim(),"authenticated response: 1 bytes");
  wait_title(&mut owner.0,h,"disconnected");
