@@ -23,3 +23,15 @@ One revised source-only CI run44685032860/job136117218916 failed a DIFFERENT unc
 ## Consistent button readiness follow-up
 
 Following explicit null-control evidence in run44685032860 and parent authorization, generalized readiness to all remaining immediate dialog clicks in gui.rs. Existing readiness loops retain their original end deadlines; existing response waits and semantic assertions remain. The late-Yes and peer-exit cases obtain a ready button BEFORE deliberate revocation/client exit, then click that same button afterward, preserving stale-consent coverage. No product code, permission, workflow, or installer change. Windows-target --tests check passes; one reviewed source-only CI run planned, stopping on any new failure.
+
+## Final bounded follow-up result
+
+Source218be665233c3cd4d2c62edb9217951dfa586776: Windows setup run44685428018/job136118492777 PASSED on its first run. Logs verified23 library (2 deliberately ignored subprocess fixtures),4 GUI,5 selection tests; all10 consent stress iterations; installed fixture4 GUI/5 selection; disposable setup exact bytes, existing-folder refusal and unrelated-data preservation. Artifacts array empty. Core run44685428071 all4 jobs passed. MCP code unchanged since the47-test passing run44684644813. Prior failed runs remain documented above. This is synthetic CI acceptance, not real user-PC installation or full Computer-Link functionality.
+
+## Native owner UI integration candidate
+
+Adds a real menu action using the sibling `computer-link-mcp-session.exe`, exact selected-source/byte-count and local-only destination disclosure, then a second exact child PID approval. The child remains Job-owned. A bounded process-handle wait reports completion through an internal channel; window messages are wakeups only. Disconnect/Exit revoke and terminate owned processes; generation fencing rejects late consent and stale results. No stdout forwarding, external endpoint, host registration, permission grant or real-owner installation.
+
+Independent review identified forged completion-message parameters as a false-success risk; corrected to a private result channel with a regression test. The executable is NOT signature/hash verified or race-pinned: this requires a trusted/quiescent installation folder and is not a sandbox. Exact local GUI wording explains that trust boundary. The app does not auto-download the missing sibling. CI builds both reviewed sources into the same disposable directory. The new GUI test is explicitly ignored in generic owner-only tests because it requires this sibling; the dedicated MCP CI explicitly runs it with `--ignored`, no skip-to-pass.
+
+Local validation: Windows MSVC target check including tests passes; 36 Linux MCP tests pass. New native GUI runtime cases are written but not yet executed: first/second denial, success, local recipient disclosure, pending-child Disconnect/late Yes, initial-consent Disconnect/late Yes and fabricated completion wakeups. Existing broader setup and owner tests must remain green. No claim of actual owner-PC or full browser/ChatGPT functionality.

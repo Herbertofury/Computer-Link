@@ -75,6 +75,19 @@ impl OwnedWorker {
   }
   self.stopped=true; Ok(())
  }
+ /// One bounded wait on a duplicated process handle; no periodic UI polling.
+ /// Callback reports exit, timeout, or wait failure without any child output.
+ pub fn notify_exit<F>(&self, finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static {
+  unsafe extern "system" {fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;fn GetExitCodeProcess(process:H,code:*mut u32)->i32;}
+  let mut observed=ptr::null_mut();
+  unsafe{let me=GetCurrentProcess();if DuplicateHandle(me,self.process.0,me,&mut observed,0,0,2)==0{return Err(io::Error::last_os_error())}}
+  // Transfer sole ownership to the waiting thread. The child remains Job-owned.
+  let observed=Handle(observed);let raw=observed.0 as usize;
+  match std::thread::Builder::new().name("computer-link-probe-completion".into()).spawn(move||{
+   let handle=Handle(raw as H);let wait=unsafe{WaitForSingleObject(handle.0,65000)};
+   let mut code=0;let result=if wait==0&&unsafe{GetExitCodeProcess(handle.0,&mut code)}!=0{Ok(code)}else{Err(io::Error::other("local probe completion unconfirmed"))};finished(result);
+  }) {Ok(_)=>{std::mem::forget(observed);Ok(())},Err(e)=>Err(e)}
+ }
  pub fn pid(&self)->u32 {self.pid}
  pub fn exit_code(&self)->io::Result<Option<u32>> {
   if self.is_running(){return Ok(None)}

@@ -52,6 +52,10 @@ impl Owner{
   if let Err(e)=self.launch_owned_worker(bridge,&args){let _=self.disconnect();return Err(e)}
   expected.store(self.owned_worker.as_ref().unwrap().pid(),std::sync::atomic::Ordering::Release);Ok(())
  }
+ /// Register a bounded completion signal for the contained local probe.
+ pub fn notify_local_worker_exit<F>(&self,finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static {
+  self.owned_worker.as_ref().ok_or_else(||io::Error::other("no owned worker"))?.notify_exit(finished)
+ }
  /// Nonblocking diagnostic completion; no content is returned or forwarded.
  pub fn local_worker_exit_code(&self)->io::Result<Option<u32>>{
   match self.owned_worker.as_ref(){Some(worker)=>worker.exit_code(),None=>Ok(None)}
