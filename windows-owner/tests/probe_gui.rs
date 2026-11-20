@@ -47,6 +47,41 @@ fn click_dialog_button(owner:&mut Child,dialog:H,id:i32){
  post(button,0xf5,0,0);
 }
 
+#[link(name="user32")]unsafe extern "system"{fn GetDlgCtrlID(h:H)->i32;}
+struct NoticeButtons { pid: u32, buttons: Vec<(H, i32)> }
+unsafe extern "system" fn notice_button(h: H, data: isize) -> i32 {
+    let state = unsafe { &mut *(data as *mut NoticeButtons) };
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(h, &mut pid); }
+    if pid != state.pid { return 1; }
+    let mut class = [0u16; 32];
+    let n = unsafe { GetClassNameW(h, class.as_mut_ptr(), class.len() as i32) };
+    if n > 0 && String::from_utf16_lossy(&class[..n as usize]) == "Button"
+        && unsafe { IsWindowVisible(h) != 0 && IsWindowEnabled(h) != 0 } {
+        state.buttons.push((h, unsafe { GetDlgCtrlID(h) }));
+        if state.buttons.len() > 1 { return 0; }
+    }
+    1
+}
+fn dismiss_notice(pid:u32,dialog:H){
+ assert_eq!(title(dialog),"Computer-Link local proof");
+ let mut button=ptr::null_mut();let mut id=0;
+ let end=Instant::now()+Duration::from_secs(5);
+ loop{let ready=(||{
+    let mut dp=0;unsafe{GetWindowThreadProcessId(dialog,&mut dp);}
+    if dp!=pid || unsafe{IsWindowVisible(dialog)==0 || IsWindowEnabled(dialog)==0} { return false; }
+    let mut state=NoticeButtons{pid,buttons:vec![]};
+    unsafe{EnumChildWindows(dialog,Some(notice_button),&mut state as *mut _ as isize);}
+    assert!(state.buttons.len()<=1,"informational notice has multiple actionable buttons");
+    if let Some(&(h,control_id))=state.buttons.first(){
+        assert!(matches!(control_id,1|2),"unexpected informational notice control ID");
+        button=h;id=control_id;true
+    }else{false}
+ })();if ready{break}assert!(Instant::now()<end,"notice button not ready");thread::sleep(Duration::from_millis(20));}
+ eprintln!("notice actionable button: id={id}");
+ post(dialog,0x111,id as usize,button as isize);
+}
+
 // Requires the real MCP sibling built into the same target directory by windows-mcp.yml.
 #[test]
 #[ignore = "requires source-built MCP sibling; run by Windows MCP acceptance"]
@@ -99,7 +134,7 @@ fn native_interactive_status_consent_requests_disconnect_and_exit(){
   let child_handle=ProcessHandle(unsafe{OpenProcess(0x100000,0,pid)});assert!(!child_handle.0.is_null());assert_eq!(unsafe{WaitForSingleObject(child_handle.0,0)},258);
   // Real repeat checks, same live process; no queued or periodic requests.
   for check in 2..=4{post(h,0x111,11,0);wait_title(&mut owner.0,h,&format!("check {check} |"));assert!(title(h).contains(&format!("PID {pid}")));}
-  post(h,0x111,2,0);let d=wait_window(&mut owner.0,"#32770");click_dialog_button(&mut owner.0,d,1);wait_no_dialog(&mut owner.0);assert!(title(h).contains("local status verified"));
+  post(h,0x111,2,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Computer-Link local proof");let end=Instant::now()+Duration::from_secs(5);while !dialog_body(d,owner.0.id()).contains("Disconnect the local status session before preparing another grant."){assert!(Instant::now()<end,"wrong grant refusal");thread::sleep(Duration::from_millis(20));}dismiss_notice(owner.0.id(),d);wait_no_dialog(&mut owner.0);assert!(title(h).contains("local status verified"));
   for message in [0x8005,0x8006]{let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(h,message,0,1,2,1000,&mut ignored)},0);}
   assert!(title(h).contains("local status verified"));
   post(h,0x111,if exit{5}else{4},0);

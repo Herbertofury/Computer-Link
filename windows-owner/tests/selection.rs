@@ -96,7 +96,12 @@ fn file_dialog_case(disconnect_while_open:bool,browser_link:bool,long_link:bool)
  if browser_link {
   post(h,0x111,7,0);
   until(pid,"browser-confirmation",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Open HTTPS link locally"});
-  let dialog=find(pid,"#32770");let body=content(dialog);
+  let dialog=find(pid,"#32770");
+  // A window title can be set before static controls and buttons exist.
+  // Wait for this exact expected body, without weakening the final equality
+  // substring assertion using the existing per-phase readiness timeout.
+  until(pid,"browser-confirmation-body-ready",||content(dialog).contains(std::str::from_utf8(fixture).unwrap()));
+  let body=content(dialog);
   assert!(body.contains(std::str::from_utf8(fixture).unwrap()),"exact URL absent from dialog text");
   assert!(body.contains("Host: example.com"));assert!(body.contains("cookies"));assert!(body.contains("remains open"));
   until(pid,"browser-deny-ready",||{let no=unsafe{GetDlgItem(dialog,7)};!no.is_null()&&unsafe{IsWindowVisible(no)!=0&&IsWindowEnabled(no)!=0}});
