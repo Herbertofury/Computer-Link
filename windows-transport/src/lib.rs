@@ -1,4 +1,4 @@
-//! Experimental local Windows status transport. No filesystem or desktop capability.
+//! Experimental local Windows status/explicit-read transport. No remote endpoint.
 #![cfg(windows)]
 use std::{ffi::c_void,io,ptr,mem,sync::Arc,time::{Duration,Instant}};
 type H=*mut c_void;
@@ -69,12 +69,13 @@ impl Server{
  }
  /// Exactly one fixed-size authenticated status/revoke request, then close.
  /// Opcode0 status, opcode1 revoke. No root/file/desktop operations admitted.
- pub fn serve_selected_read(self,selected:computer_link_workspace_candidate::SelectedRead)->io::Result<bool>{self.serve_inner(Some(selected))}
+ pub fn serve_selected_read(self,selected:computer_link_workspace_candidate::SelectedRead)->io::Result<bool>{self.serve_inner(Some(Box::new(move || { let mut selected=selected; selected.read() })))}
  pub fn serve_once(self)->io::Result<bool>{self.serve_inner(None)}
- fn serve_inner(self,mut selected:Option<computer_link_workspace_candidate::SelectedRead>)->io::Result<bool>{self.operation(0,vec![])?;let b=self.operation(1,vec![0;33])?;
+ pub fn serve_snapshot(self,bytes:Vec<u8>)->io::Result<bool>{if bytes.len()>4096||std::str::from_utf8(&bytes).is_err(){return Err(io::Error::other("snapshot refused"))}self.serve_inner(Some(Box::new(move || Ok(bytes))))}
+ fn serve_inner(self,selected:Option<Box<dyn FnOnce()->io::Result<Vec<u8>>>>)->io::Result<bool>{self.operation(0,vec![])?;let b=self.operation(1,vec![0;33])?;
   if b.len()!=33{return Err(io::Error::other("frame refused"))}let diff=b[..32].iter().zip(self.token).fold(0u8,|a,(x,y)|a|(x^y));if diff!=0{return Err(io::Error::other("unauthorized"))}
   if Instant::now()>=self.end||unsafe{WaitForSingleObject(self.stop.0.0,0)}==0{return Err(io::Error::other("session stopped"))}
-  match b[32]{2=>{let selected=selected.as_mut().ok_or_else(||io::Error::other("capability not granted"))?;let data=selected.read()?;if data.len()>4096{return Err(io::Error::other("read bound refused"))}let mut frame=(data.len() as u32).to_be_bytes().to_vec();frame.extend(data);let expected=frame.len();if self.operation(2,frame)?.len()!=expected{return Err(io::Error::other("short response write"))}Ok(false)},0=>{if self.operation(2,vec![1])?.len()!=1{return Err(io::Error::other("short response write"))}Ok(false)},1=>{self.stop.revoke()?;Ok(true)},_=>Err(io::Error::other("capability refused"))}
+  match b[32]{2=>{let selected=selected.ok_or_else(||io::Error::other("capability not granted"))?;let data=selected()?;if data.len()>4096{return Err(io::Error::other("read bound refused"))}let mut frame=(data.len() as u32).to_be_bytes().to_vec();frame.extend(data);let expected=frame.len();if self.operation(2,frame)?.len()!=expected{return Err(io::Error::other("short response write"))}Ok(false)},0=>{if self.operation(2,vec![1])?.len()!=1{return Err(io::Error::other("short response write"))}Ok(false)},1=>{self.stop.revoke()?;Ok(true)},_=>Err(io::Error::other("capability refused"))}
  }
 }
 #[cfg(test)]mod tests{

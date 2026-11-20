@@ -1,0 +1,6 @@
+[package]
+name = "computer-link-owner-proof"
+version = "0.1.0"
+edition = "2024"
+[target.'cfg(windows)'.dependencies]
+computer-link-local-transport = { path = "../windows-transport" }
