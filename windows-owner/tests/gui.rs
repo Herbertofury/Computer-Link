@@ -11,6 +11,7 @@ fn GetClassNameW(h:H,b:*mut u16,n:i32)->i32;
 fn GetWindowTextW(h:H,b:*mut u16,n:i32)->i32;
 fn PostMessageW(h:H,m:u32,w:usize,l:isize)->i32;
 fn GetDlgItem(h:H,id:i32)->H;
+fn IsWindow(h:H)->i32;fn IsWindowVisible(h:H)->i32;fn IsWindowEnabled(h:H)->i32;
 }
 struct Search{pid:u32,class:&'static str,result:H}
 unsafe extern "system" fn visit(h:H,data:isize)->i32{let s=unsafe{&mut *(data as *mut Search)};let mut pid=0;unsafe{GetWindowThreadProcessId(h,&mut pid);}if pid==s.pid{let mut b=[0u16;128];let n=unsafe{GetClassNameW(h,b.as_mut_ptr(),128)};if n>0&&String::from_utf16_lossy(&b[..n as usize])==s.class{s.result=h;return 0}}1}
@@ -36,12 +37,24 @@ for round in 0..2{
 }
 }
 
-fn prepare_status(child:&mut Child,h:H)->String{post(h,0x111,2,0);let dialog=wait_window(child,"#32770");post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);wait_title(child,h,"one local grant");title(h).split(" | ").nth(1).expect("public rendezvous name").to_owned()}
+// Fixed-label diagnostics only: no dialog body, executable path, PID or title is logged.
+#[allow(dead_code)] // Read exclusively through privacy-safe Debug on failure.
+#[derive(Debug)]struct GrantDiagnostic{dialog_present:bool,permission_title:bool,client_title:bool,notice_title:bool,yes_present:bool,yes_visible:bool,yes_enabled:bool,yes_owned:bool}
+fn grant_diagnostic(dialog:H,pid:u32)->GrantDiagnostic{let yes=unsafe{GetDlgItem(dialog,6)};let mut actual=0;if !yes.is_null(){unsafe{GetWindowThreadProcessId(yes,&mut actual);}}let t=if dialog.is_null(){String::new()}else{title(dialog)};GrantDiagnostic{dialog_present:!dialog.is_null()&&unsafe{IsWindow(dialog)}!=0,permission_title:t=="Explicit local permission",client_title:t=="Authorize connected client",notice_title:t=="Computer-Link local proof",yes_present:!yes.is_null(),yes_visible:!yes.is_null()&&unsafe{IsWindowVisible(yes)}!=0,yes_enabled:!yes.is_null()&&unsafe{IsWindowEnabled(yes)}!=0,yes_owned:!yes.is_null()&&actual==pid}}
+fn prepare_status(child:&mut Child,h:H,case:&str)->String{
+ post(h,0x111,2,0);let dialog=wait_window(child,"#32770");let before=grant_diagnostic(dialog,child.id());post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);
+ let end=Instant::now()+Duration::from_secs(5);while !title(h).contains("one local grant"){
+ assert!(child.try_wait().unwrap().is_none(),"grant case {case}: owner exited");
+ if Instant::now()>=end{let after=grant_diagnostic(window(child.id(),"#32770"),child.id());panic!("grant case {case}: no local grant; before={before:?}; after={after:?}")}
+ thread::sleep(Duration::from_millis(20));
+ }
+ title(h).split(" | ").nth(1).expect("public rendezvous name").to_owned()
+}
 fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration::from_secs(5);loop{if let Some(status)=child.try_wait().unwrap(){assert_eq!(status.success(),success);break}assert!(Instant::now()<end,"client did not terminate");thread::sleep(Duration::from_millis(20));}}
 #[test]fn actual_gui_authorizes_separate_client_and_invalidates_late_consent(){
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
  for case in ["deny","allow","wrong-op","late-yes","peer-exit"]{
- let name=prepare_status(&mut owner.0,h);let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
+ let name=prepare_status(&mut owner.0,h,case);let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
  let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
  if case=="peer-exit"{client.0.kill().unwrap();client.0.wait().unwrap();}
  if case=="late-yes"{post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");}
