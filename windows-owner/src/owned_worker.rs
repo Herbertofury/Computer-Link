@@ -169,7 +169,8 @@ fn quote(s:&std::ffi::OsStr)->io::Result<Vec<u16>> {
   let mut value=String::new();std::io::stdin().read_line(&mut value).unwrap();
   let handle=value.trim().parse::<usize>().unwrap() as H;
   let mut name=String::new();std::io::stdin().read_line(&mut name).unwrap();
-  unsafe extern "system"{fn OpenEventW(access:u32,inherit:i32,name:*const u16)->H;fn CompareObjectHandles(first:H,second:H)->i32;fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;}
+  unsafe extern "system"{fn OpenEventW(access:u32,inherit:i32,name:*const u16)->H;fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;}
+  #[link(name="kernelbase")] unsafe extern "system"{fn CompareObjectHandles(first:H,second:H)->i32;}
   let mut observed=ptr::null_mut();
   let me=unsafe{GetCurrentProcess()};
   if unsafe{DuplicateHandle(me,handle,me,&mut observed,0,0,2)}==0 {
