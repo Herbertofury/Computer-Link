@@ -27,9 +27,12 @@ impl Owner{
  let worker=thread::Builder::new().name("computer-link-local-session".into()).spawn(move||match snapshot{Some(b)=>server.serve_snapshot(b),None=>server.serve_once()})?;self.active=Some((stop,worker));Ok(pairing)
  }
  pub fn allow_paired<F>(&mut self,snapshot:Option<Vec<u8>>,approve:F)->io::Result<String> where F:FnOnce(PeerInfo,Instant,Stop)->io::Result<bool>+Send+'static{
+ self.allow_paired_notified(snapshot,approve,||{})
+ }
+ pub fn allow_paired_notified<F,N>(&mut self,snapshot:Option<Vec<u8>>,approve:F,finished:N)->io::Result<String> where F:FnOnce(PeerInfo,Instant,Stop)->io::Result<bool>+Send+'static,N:FnOnce()+Send+'static{
  if self.active.is_some()||self.fenced{return Err(io::Error::other("disconnect before another grant"))}
  if let Some(b)=&snapshot{if b.len()>4096||std::str::from_utf8(b).is_err(){return Err(io::Error::other("snapshot refused"))}}
- let server=Server::new(Duration::from_secs(60))?;let name=server.pairing().0;let stop=server.stop();let worker=thread::Builder::new().name("computer-link-paired-session".into()).spawn(move||server.serve_paired(snapshot,approve))?;self.active=Some((stop,worker));Ok(name)
+ let server=Server::new(Duration::from_secs(60))?;let name=server.pairing().0;let stop=server.stop();let worker=thread::Builder::new().name("computer-link-paired-session".into()).spawn(move||{let result=server.serve_paired(snapshot,approve);finished();result})?;self.active=Some((stop,worker));Ok(name)
  }
  pub fn disconnect(&mut self)->io::Result<()>{
  let Some((stop,worker))=self.active.as_ref()else{return if self.fenced{Err(io::Error::other("shutdown remains unconfirmed; exit process required"))}else{Ok(())}};self.fenced=true;stop.revoke()?;

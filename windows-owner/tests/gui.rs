@@ -27,6 +27,7 @@ for round in 0..2{
  let deadline=Instant::now()+Duration::from_secs(5);while !window(child.0.id(),"#32770").is_null(){assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(20));}assert!(title(h).contains("disconnected"));
  // A second deliberate command and Yes are required. No hidden CLI consent flag.
  post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let yes=unsafe{GetDlgItem(dialog,6)};assert!(!yes.is_null());post(yes,0xf5,0,0);wait_title(&mut child.0,h,"one local grant");
+ let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0x8003,0,0,2,1000,&mut ignored)},0);assert!(title(h).contains("one local grant"),"stale completion revoked a newer grant");
  post(h,0x111,4,0);wait_title(&mut child.0,h,"disconnected");
  if round==0{post(h,0x111,5,0)}else{post(h,0x10,0,0)}
  let end=Instant::now()+Duration::from_secs(5);loop{if let Some(status)=child.0.try_wait().unwrap(){assert!(status.success());break}assert!(Instant::now()<end,"actual GUI process did not exit");thread::sleep(Duration::from_millis(20));}
@@ -46,6 +47,7 @@ fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration:
  post(unsafe{GetDlgItem(prompt,if case=="deny"{7}else{6})},0xf5,0,0);
  if case!="peer-exit"{finish_client(&mut client.0,case=="allow");}
  let mut out=String::new();use std::io::Read;client.0.stdout.take().unwrap().read_to_string(&mut out).unwrap();if case=="allow"{assert_eq!(out.trim(),"authenticated response: 1 bytes")}else{assert!(out.is_empty())}
+ wait_title(&mut owner.0,h,"disconnected");
  post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
  // A completed/denied/revoked session must never accept another connecting client.
  let mut again=Guard(Command::new(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut again.0,false);
@@ -77,7 +79,7 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  let expected=body.split_once("\n\n").expect("preview payload separator").1.as_bytes().to_vec();assert_eq!(expected.len(),n);let owner_pid=owner.0.id();
  // This test executable is a separate client process from the owner. Keep actual
  // bytes only in memory and never print captured desktop titles on mismatch.
- let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
  }
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
