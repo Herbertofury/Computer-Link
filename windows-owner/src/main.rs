@@ -45,6 +45,16 @@ fn status_work<F>(h:H,generation:u64,work:F) where F:FnOnce()->std::io::Result<L
 unsafe extern "system" fn procedure(h:H,m:u32,w:usize,l:isize)->isize{
 match m{
 0x111=>{if !matches!(w&0xffff,4|5)&&STATE.with(|s|s.borrow().export.is_some()){notice(h,"Finish or cancel the current local export first. No additional operation was started.");return 0}match w&0xffff{
+13=>{
+ if !stop(h){return 0}
+ let generation=STATE.with(|s|s.borrow().generation);
+ let consent="Open a LOCAL window selector in a tray-owned process? Window titles remain on this computer. Choose one observed window, then confirm once to bring it forward. No typing, clicking, browser-tab access, remote control or AI connection. Only use on a trusted, quiescent desktop. Disconnect or Exit kills the selector and its pending prompts; it cannot undo an already completed foreground change. The installed executable/folder must be trusted.";
+ if unsafe{MessageBoxW(h,wide(consent).as_ptr(),wide("Local foreground selector permission").as_ptr(),0x104)}!=6||!STATE.with(|s|s.borrow().generation==generation){return 0}
+ let result=std::env::current_exe().and_then(|exe|STATE.with(|s|s.borrow_mut().owner.launch_owned_worker(&exe,&["--local-focus-selector".into()])));
+ match result{Ok(())=>{unsafe{SetWindowTextW(h,wide(&format!("Computer-Link — local foreground selector active | PID {} | Disconnect stops selector",STATE.with(|s|s.borrow().owner.local_worker_pid().unwrap_or(0)))).as_ptr());}let(tx,rx)=mpsc::channel();STATE.with(|s|s.borrow_mut().live_exit=Some(rx));let hwnd=h as usize;
+ let result=STATE.with(|s|s.borrow().owner.notify_local_session_exit(move|_|{let _=tx.send(generation);unsafe{PostMessageW(hwnd as H,0x8006,0,0);}}));
+ if result.is_err(){stop(h);notice(h,"Could not observe selector lifetime; disconnected.");}
+ },Err(e)=>notice(h,&format!("Selector launch refused: {e}"))}},
 1=>{if stop(h){let selection_generation=STATE.with(|s|{let mut s=s.borrow_mut();s.selected=None;s.generation});if let Some(path)=choose(h){if !STATE.with(|s|s.borrow().generation==selection_generation){return 0}match snapshot(&path){Ok(bytes)=>{let count=bytes.len();STATE.with(|s|s.borrow_mut().selected=Some((path.clone(),bytes)));notice(h,&format!("Selected {} bytes from {}. Nothing shared yet. Allow once grants this captured text only, not future file changes.",count,path.display()));},Err(e)=>notice(h,&format!("Selection refused: {e}"))}}}},
 2|3=>{if STATE.with(|s|s.borrow().live_exit.is_some()){notice(h,"Disconnect the local status session before preparing another grant.");return 0}let consent_generation=STATE.with(|s|s.borrow().generation);let selected=STATE.with(|s|s.borrow().selected.clone());if w&0xffff==3&&selected.is_none(){notice(h,"Choose a bounded UTF-8 file first.");return 0}
 let detail=if w&0xffff==3{format!("Allow ONE local paired read of the captured {} bytes from {}?",selected.as_ref().unwrap().1.len(),selected.as_ref().unwrap().0.display())}else{"Allow ONE local paired status request?".to_owned()};
@@ -144,8 +154,13 @@ match result{Ok(name)=>{unsafe{SetWindowTextW(h,wide(&format!("Computer-Link —
 0x10=>{exit(h);0},0x2=>{unsafe{PostQuitMessage(0);}0},_=>unsafe{DefWindowProcW(h,m,w,l)}}}
 pub fn run(){unsafe{let instance=GetModuleHandleW(ptr::null());let name=wide("ComputerLinkOwnerProof");let icon=LoadIconW(ptr::null_mut(),32512usize as *const u16);let mut c:Class=mem::zeroed();c.size=mem::size_of::<Class>() as u32;c.proc=Some(procedure);c.instance=instance;c.name=name.as_ptr();c.icon=icon;c.brush=6usize as H;if RegisterClassExW(&c)==0{return}
 let h=CreateWindowExW(0,name.as_ptr(),wide("Computer-Link — disconnected (local proof)").as_ptr(),0x10cf0000,100,100,760,220,ptr::null_mut(),ptr::null_mut(),instance,ptr::null_mut());if h.is_null(){return}
-let menu=CreateMenu();for(id,label)in[(1,"Choose text file"),(2,"Allow status once"),(3,"Allow selected read once"),(6,"Capture window inventory locally"),(8,"Capture folder inventory locally"),(7,"Open selected HTTPS link locally"),(9,"Run local snapshot diagnostic"),(10,"Start local status session"),(11,"Check local status"),(12,"Export selected text as new local file"),(4,"Disconnect"),(5,"Exit")]{AppendMenuW(menu,0,id,wide(label).as_ptr());}SetMenu(h,menu);
+let menu=CreateMenu();for(id,label)in[(1,"Choose text file"),(2,"Allow status once"),(3,"Allow selected read once"),(6,"Capture window inventory locally"),(8,"Capture folder inventory locally"),(7,"Open selected HTTPS link locally"),(9,"Run local snapshot diagnostic"),(10,"Start local status session"),(11,"Check local status"),(12,"Export selected text as new local file"),(13,"Bring a window forward locally"),(4,"Disconnect"),(5,"Exit")]{AppendMenuW(menu,0,id,wide(label).as_ptr());}SetMenu(h,menu);
 let mut n:Nid=mem::zeroed();n.size=mem::size_of::<Nid>() as u32;n.hwnd=h;n.id=1;n.flags=7;n.callback=0x8001;n.icon=icon;let tip=wide("Computer-Link local proof: click to open, Exit disconnects");n.tip[..tip.len()].copy_from_slice(&tip);if Shell_NotifyIconW(0,&n)!=0{STATE.with(|s|s.borrow_mut().tray=Some(n));}
 let mut msg:Msg=mem::zeroed();while GetMessageW(&mut msg,ptr::null_mut(),0,0)>0{let preview=STATE.with(|s|s.borrow().export_preview.as_ref().map(|p|p.handle()));if let Some(preview)=preview{if IsDialogMessageW(preview as H,&msg)!=0{continue}}TranslateMessage(&msg);DispatchMessageW(&msg);} }}
 }
-#[cfg(windows)]fn main(){gui::run();}
+#[cfg(windows)]fn main(){
+ let args:Vec<_>=std::env::args_os().skip(1).collect();
+ if args.len()==1&&args[0]=="--local-focus-selector"{computer_link_owner_proof::window_focus_ui::run();}
+ else if args.is_empty(){gui::run();}
+ else{std::process::exit(2)}
+}

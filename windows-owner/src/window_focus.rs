@@ -49,10 +49,13 @@ impl Target {
  pub fn description(&self)->String {format!("{}\nClass: {}\nPID: {}; thread: {}; HWND: {:x}",self.identity.title,self.identity.class,self.identity.pid,self.identity.thread,self.identity.hwnd)}
  /// Consumes selection. Cancellation never invokes the foreground API. No automatic retries.
  pub fn ask_and_focus(self)->io::Result<bool> {
+  self.ask_and_focus_owned(std::ptr::null_mut(),||true)
+ }
+ pub(crate) fn ask_and_focus_owned(self,owner:H,still_allowed:impl FnOnce()->bool)->io::Result<bool>{
   self.validate()?;
   let text=format!("Bring this selected observed window to the foreground once?\n\n{}\n\nLocal-only. No typing, clicking, restoring or remote control. Window titles are untrusted. Do not use on a hostile or rapidly changing desktop. Cancel stops without action.",self.description());
-  let approved=unsafe{MessageBoxW(std::ptr::null_mut(),wide(&text).as_ptr(),wide("Computer Link: one local foreground request").as_ptr(),0x1|0x100|0x30)}==1;
-  self.perform_if(approved)
+  let approved=unsafe{MessageBoxW(owner,wide(&text).as_ptr(),wide("Computer Link: one local foreground request").as_ptr(),0x1|0x100|0x30)}==1;
+  self.perform_if(approved&&still_allowed())
  }
  fn perform_if(self,approved:bool)->io::Result<bool>{
   self.perform_with(approved,|h| unsafe{SetForegroundWindow(h)}!=0 && unsafe{GetForegroundWindow()}==h)
