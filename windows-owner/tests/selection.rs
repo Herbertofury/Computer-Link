@@ -154,11 +154,47 @@ fn export_result(pid:u32,expected:&str){
  dismiss_notice(pid,find(pid,"#32770"));until(pid,"export-result-dismissed",||find(pid,"#32770").is_null());
 }
 fn click_export(pid:u32,p:H,id:i32){until(pid,"export-button-ready",||{let b=unsafe{GetDlgItem(p,id)};!b.is_null()&&unsafe{IsWindowEnabled(b)!=0&&IsWindowVisible(b)!=0}});post(unsafe{GetDlgItem(p,id)},0xf5,0,0);}
+
+// Test-only spelling adapter for disposable trusted NTFS fixtures. Never use
+// string normalization alone as proof of destination identity.
+#[repr(C)]
+struct FileInformation {
+ attributes:u32, creation:[u32;2], access:[u32;2], write:[u32;2],
+ volume:u32, size_high:u32, size_low:u32, links:u32, index_high:u32, index_low:u32,
+}
+#[link(name="kernel32")]unsafe extern "system" {
+ fn GetLongPathNameW(input:*const u16,output:*mut u16,size:u32)->u32;
+ fn GetFileInformationByHandle(handle:H,information:*mut FileInformation)->i32;
+}
+fn fixture_long_path(path:&std::path::Path)->std::path::PathBuf {
+ use std::os::windows::{ffi::{OsStrExt,OsStringExt},fs::OpenOptionsExt,io::AsRawHandle};
+ let input:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();
+ assert!(!input[..input.len()-1].contains(&0));
+ let mut output=vec![0u16;32768];
+ let n=unsafe{GetLongPathNameW(input.as_ptr(),output.as_mut_ptr(),output.len() as u32)} as usize;
+ assert!(n>0&&n<output.len(),"fixture path expansion failed: {}",std::io::Error::last_os_error());
+ assert_eq!(output[n],0);
+ let expanded=std::path::PathBuf::from(std::ffi::OsString::from_wide(&output[..n]));
+ let open=|p:&std::path::Path|std::fs::OpenOptions::new().access_mode(0)
+     .share_mode(7).custom_flags(0x02000000|0x00200000).open(p).unwrap();
+ // Keep both handles alive during comparison; reject a final-component reparse.
+ let original=open(path);let long=open(&expanded);
+ let identity=|file:&std::fs::File|{
+   let mut info:FileInformation=unsafe{std::mem::zeroed()};
+   assert_ne!(unsafe{GetFileInformationByHandle(file.as_raw_handle(),&mut info)},0,
+       "fixture identity query failed: {}",std::io::Error::last_os_error());
+   assert_ne!(info.attributes&0x10,0,"fixture must be a directory");
+   assert_eq!(info.attributes&0x400,0,"fixture must not be a reparse point");
+   (info.volume,info.index_high,info.index_low)
+ };
+ assert_eq!(identity(&original),identity(&long),"short and expanded fixture paths differ");
+ expanded
+}
 #[test]fn local_export_exact_preview_deny_save_and_preserve_existing(){
  let dir=std::env::temp_dir().join(format!("owner-export-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();
  let dest=dir.join("destination");std::fs::create_dir(&dest).unwrap();let source=dir.join("source.txt");let fixture=format!("{}\nEND-EXACT-EXPORT", "x".repeat(4079));assert_eq!(fixture.len(),4096);std::fs::write(&source,&fixture).unwrap();
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"export-owner",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");select_export_fixture(h,pid,&source);
- let p=open_export_preview(h,pid,&dest);let e=unsafe{GetDlgItem(p,100)};assert!(!e.is_null());let display=read_edit(e);assert!(display.contains(&format!("{fixture:?}")));assert!(display.contains(&format!("{dest:?}")),"synthetic destination mismatch: expected={dest:?}, displayed-first-line={:?}",display.lines().next());assert!(display.contains("computer-link-export.txt"));assert!(display.contains("No overwrite"));assert_ne!(unsafe{GetWindowLongPtrW(e,-16)}&0x800,0,"preview must be read-only");
+ let p=open_export_preview(h,pid,&dest);let e=unsafe{GetDlgItem(p,100)};assert!(!e.is_null());let display=read_edit(e);assert!(display.contains(&format!("{fixture:?}")));let expected=fixture_long_path(&dest);assert_eq!(display.lines().next(),Some(format!("Selected local folder: {expected:?}").as_str()),"exact expanded synthetic destination required");assert!(display.contains("computer-link-export.txt"));assert!(display.contains("No overwrite"));assert_ne!(unsafe{GetWindowLongPtrW(e,-16)}&0x800,0,"preview must be read-only");
  let no=unsafe{GetDlgItem(p,2)};until(pid,"export-default-cancel-focus",||keyboard_focus(p)==no);
  post(no,0x100,0x0d,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
  // Tab traversal remains usable, but Escape always denies even with Create focused.
