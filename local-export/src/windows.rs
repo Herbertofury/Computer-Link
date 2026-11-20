@@ -72,7 +72,10 @@ fn publish_with_writer(root:&File,name:&str,bytes:&[u8],write:impl FnOnce(&mut F
     let wide:Vec<u16>=name.encode_utf16().collect();
     let mut rename:Rename=unsafe{std::mem::zeroed()};rename.root=root.as_raw_handle();rename.length=(wide.len()*2) as u32;rename.name[..wide.len()].copy_from_slice(&wide);
     // ReplaceIfExists FALSE; source is still the exact exclusively held handle.
-    let size=std::mem::offset_of!(Rename,name)+wide.len()*2;
+    // Supply the complete structure buffer, including tail padding and the
+    // terminating WCHAR; FileNameLength still excludes the terminator.
+    // The fixed zeroed array always has room for 80 code units plus NUL.
+    let size=std::mem::size_of::<Rename>();
     if unsafe{SetFileInformationByHandle(file.as_raw_handle(),3,&rename as *const _ as *const c_void,size as u32)}==0 {
         return Err(io::Error::other(format!("publish refused; existing destination preserved, {stage} retained: {}",io::Error::last_os_error())))
     }
