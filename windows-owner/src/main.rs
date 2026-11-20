@@ -18,19 +18,25 @@ fn PostMessageW(h:H,m:u32,w:usize,l:isize)->i32;fn MessageBoxW(h:H,text:*const u
 #[link(name="shell32")]unsafe extern "system"{fn Shell_NotifyIconW(m:u32,n:*const Nid)->i32;}
 #[link(name="comdlg32")]unsafe extern "system"{fn GetOpenFileNameW(o:*mut Ofn)->i32;}
 struct Prompt{peer:computer_link_local_transport::PeerInfo,generation:u64,end:Instant,reply:mpsc::Sender<bool>}
-struct State{owner:Owner,selected:Option<(PathBuf,Vec<u8>)>,tray:Option<Nid>,generation:u64,scope:String,prompts:Option<mpsc::Receiver<Prompt>>,completion:Option<mpsc::Receiver<(u64,bool)>>}
-thread_local!{static STATE:RefCell<State>=RefCell::new(State{owner:Owner::default(),selected:None,tray:None,generation:0,scope:String::new(),prompts:None,completion:None});}
+type LiveClient=computer_link_owner_proof::status_protocol::StatusClient<std::io::BufReader<std::fs::File>,std::fs::File>;
+struct State{checks:u32,live:Option<LiveClient>,live_reply:Option<mpsc::Receiver<(u64,std::io::Result<LiveClient>)>>,live_exit:Option<mpsc::Receiver<u64>>,owner:Owner,selected:Option<(PathBuf,Vec<u8>)>,tray:Option<Nid>,generation:u64,scope:String,prompts:Option<mpsc::Receiver<Prompt>>,completion:Option<mpsc::Receiver<(u64,bool)>>}
+thread_local!{static STATE:RefCell<State>=RefCell::new(State{checks:0,live:None,live_reply:None,live_exit:None,owner:Owner::default(),selected:None,tray:None,generation:0,scope:String::new(),prompts:None,completion:None});}
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 fn notice(h:H,s:&str){unsafe{MessageBoxW(h,wide(s).as_ptr(),wide("Computer-Link local proof").as_ptr(),0x40);}}
 fn choose(h:H)->Option<PathBuf>{let mut b=vec![0u16;32768];let mut o:Ofn=unsafe{mem::zeroed()};o.size=mem::size_of::<Ofn>() as u32;o.owner=h;o.file=b.as_mut_ptr();o.max_file=b.len() as u32;o.flags=0x80000|0x1000|0x800|0x8|0x100000; // Explorer, file/path must exist, no cwd change, no link dereference.
 if unsafe{GetOpenFileNameW(&mut o)}==0{return None}let n=b.iter().position(|v|*v==0)?;Some(PathBuf::from(std::ffi::OsString::from_wide(&b[..n])))}
-fn stop(h:H)->bool{let result=STATE.with(|s|{let mut s=s.borrow_mut();s.generation=s.generation.wrapping_add(1);s.prompts=None;s.completion=None;s.owner.disconnect()});match result{Ok(())=>{unsafe{SetWindowTextW(h,wide("Computer-Link — disconnected (local proof)").as_ptr());}true},Err(e)=>{notice(h,&format!("Disconnect could not confirm cleanup: {e}. Exit ends this process; do not start another session."));false}}}
+fn stop(h:H)->bool{let result=STATE.with(|s|{let mut s=s.borrow_mut();s.generation=s.generation.wrapping_add(1);s.prompts=None;s.completion=None;s.checks=0;s.live=None;s.live_reply=None;s.live_exit=None;s.owner.disconnect()});match result{Ok(())=>{unsafe{SetWindowTextW(h,wide("Computer-Link — disconnected (local proof)").as_ptr());}true},Err(e)=>{notice(h,&format!("Disconnect could not confirm cleanup: {e}. Exit ends this process; do not start another session."));false}}}
 fn exit(h:H){let clean=stop(h);STATE.with(|s|{if let Some(n)=s.borrow_mut().tray.take(){unsafe{Shell_NotifyIconW(2,&n);}}});if !clean{unsafe{ExitProcess(2)}}unsafe{DestroyWindow(h);}}
+fn status_work<F>(h:H,generation:u64,work:F) where F:FnOnce()->std::io::Result<LiveClient>+Send+'static{
+ let(tx,rx)=mpsc::channel();STATE.with(|s|s.borrow_mut().live_reply=Some(rx));let hwnd=h as usize;
+ unsafe{SetWindowTextW(h,wide("Computer-Link — checking local status; Disconnect cancels").as_ptr());}
+ if std::thread::Builder::new().name("local-status-request".into()).spawn(move||{let _=tx.send((generation,work()));unsafe{PostMessageW(hwnd as H,0x8005,0,0);}}).is_err(){stop(h);notice(h,"Could not start local status worker.");}
+}
 unsafe extern "system" fn procedure(h:H,m:u32,w:usize,l:isize)->isize{
 match m{
 0x111=>{match w&0xffff{
 1=>{if stop(h){let selection_generation=STATE.with(|s|{let mut s=s.borrow_mut();s.selected=None;s.generation});if let Some(path)=choose(h){if !STATE.with(|s|s.borrow().generation==selection_generation){return 0}match snapshot(&path){Ok(bytes)=>{let count=bytes.len();STATE.with(|s|s.borrow_mut().selected=Some((path.clone(),bytes)));notice(h,&format!("Selected {} bytes from {}. Nothing shared yet. Allow once grants this captured text only, not future file changes.",count,path.display()));},Err(e)=>notice(h,&format!("Selection refused: {e}"))}}}},
-2|3=>{let consent_generation=STATE.with(|s|s.borrow().generation);let selected=STATE.with(|s|s.borrow().selected.clone());if w&0xffff==3&&selected.is_none(){notice(h,"Choose a bounded UTF-8 file first.");return 0}
+2|3=>{if STATE.with(|s|s.borrow().live_exit.is_some()){notice(h,"Disconnect the local status session before preparing another grant.");return 0}let consent_generation=STATE.with(|s|s.borrow().generation);let selected=STATE.with(|s|s.borrow().selected.clone());if w&0xffff==3&&selected.is_none(){notice(h,"Choose a bounded UTF-8 file first.");return 0}
 let detail=if w&0xffff==3{format!("Allow ONE local paired read of the captured {} bytes from {}?",selected.as_ref().unwrap().1.len(),selected.as_ref().unwrap().0.display())}else{"Allow ONE local paired status request?".to_owned()};
 let text=format!("{detail}\nExpires after 60 seconds. No write, delete, browser, network or administrator authority. Disconnect or Exit revokes this session. A connecting local process requires a second explicit approval. This proof does NOT connect ChatGPT.");
 if unsafe{MessageBoxW(h,wide(&text).as_ptr(),wide("Explicit local permission").as_ptr(),0x104)}==6&&STATE.with(|s|s.borrow().generation==consent_generation){
@@ -74,15 +80,30 @@ match result{Ok(name)=>{unsafe{SetWindowTextW(h,wide(&format!("Computer-Link —
  if let Err(e)=result{stop(h);notice(h,&format!("Diagnostic completion tracking failed: {e}"));return 0}
  unsafe{SetWindowTextW(h,wide("Computer-Link — local diagnostic awaiting approval").as_ptr());}
 }},
+10=>{if stop(h){
+ let bridge=match std::env::current_exe().ok().and_then(|p|p.parent().map(|d|d.join("computer-link-mcp-session.exe"))){Some(p) if p.is_file()=>p,_=>{notice(h,"The sibling computer-link-mcp-session.exe is missing. Nothing launched.");return 0}};
+ let generation=STATE.with(|s|s.borrow().generation);
+ let text=format!("Start an interactive LOCAL STATUS-ONLY session?\nRecipient executable: {}\nDestination: this Computer-Link owner only. No ChatGPT, AI provider, browser or remote host. No snapshot or file bytes are shared.\n\nThe sibling runs with your existing OS permissions; this is not executable isolation or signer verification. Continue only if you trust its folder and executable. Disconnect or Exit kills its owned process tree. Nothing restarts automatically. Check local status sends a request only when clicked; there is no polling.",bridge.display());
+ if unsafe{MessageBoxW(h,wide(&text).as_ptr(),wide("Start local status session").as_ptr(),0x104)}!=6||!STATE.with(|s|s.borrow().generation==generation){return 0}
+ let io=match STATE.with(|s|s.borrow_mut().owner.launch_local_status_session(&bridge)){Ok(io)=>io,Err(e)=>{stop(h);notice(h,&format!("Local status launch refused: {e}"));return 0}};
+ let (tx,rx)=mpsc::channel();STATE.with(|s|s.borrow_mut().live_exit=Some(rx));let hwnd=h as usize;
+ if STATE.with(|s|s.borrow().owner.notify_local_session_exit(move|_|{let _=tx.send(generation);unsafe{PostMessageW(hwnd as H,0x8006,0,0);}})).is_err(){stop(h);notice(h,"Could not track local process exit.");return 0}
+ status_work(h,generation,move||{let mut client=LiveClient::initialize(std::io::BufReader::new(io.output),io.input)?;client.check()?;Ok(client)});
+}},
+11=>{let current=STATE.with(|s|{let mut s=s.borrow_mut();s.live.take().map(|client|(s.generation,client))});
+ if let Some((generation,mut client))=current{status_work(h,generation,move||{client.check()?;Ok(client)});}
+},
 4=>{stop(h);},5=>exit(h),_=>{}}0},
 0x8002=>{let prompt=STATE.with(|s|s.borrow().prompts.as_ref().and_then(|rx|rx.try_recv().ok()));if let Some(p)=prompt{let current=STATE.with(|s|s.borrow().generation);if current==p.generation&&Instant::now()<p.end{let path:String=p.peer.image.chars().map(|c|if c.is_control(){'�'}else{c}).collect();let scope=STATE.with(|s|s.borrow().scope.clone());let text=format!("Authorize this connected local process for the prepared one-use grant?\nScope: {scope}\nPID: {}\nUnverified executable path: {}\nCreation identity: {}\nNo signer verification. No write/delete/admin/browser access. No reconnect reuse.",p.peer.pid,path,p.peer.created);let yes=unsafe{MessageBoxW(h,wide(&text).as_ptr(),wide("Authorize connected client").as_ptr(),0x104)}==6;let valid=STATE.with(|s|s.borrow().generation==p.generation)&&Instant::now()<p.end;let _=p.reply.send(yes&&valid);}else{let _=p.reply.send(false);}}0},
 0x8004=>{let completed=STATE.with(|s|s.borrow().completion.as_ref().and_then(|rx|rx.try_recv().ok()));if let Some((generation,passed))=completed{if STATE.with(|s|s.borrow().generation)==generation&&stop(h){unsafe{SetWindowTextW(h,wide(if passed{"Computer-Link — local diagnostic passed; disconnected"}else{"Computer-Link — local diagnostic refused or failed; disconnected"}).as_ptr());}}}0},
+0x8005=>{let completed=STATE.with(|s|s.borrow().live_reply.as_ref().and_then(|rx|rx.try_recv().ok()));if let Some((generation,result))=completed{if STATE.with(|s|s.borrow().generation)==generation{match result{Ok(client)=>{STATE.with(|s|{let mut s=s.borrow_mut();s.live=Some(client);s.live_reply=None;s.checks+=1;});unsafe{SetWindowTextW(h,wide(&format!("Computer-Link — local status verified; dot NOT connected; check {} | PID {}",STATE.with(|s|s.borrow().checks),STATE.with(|s|s.borrow().owner.local_worker_pid().unwrap_or(0)))).as_ptr());}},Err(_)=>{if stop(h){unsafe{SetWindowTextW(h,wide("Computer-Link — local status failed; disconnected").as_ptr());}}}}}}0},
+0x8006=>{let ended=STATE.with(|s|s.borrow().live_exit.as_ref().and_then(|rx|rx.try_recv().ok()));if let Some(generation)=ended{if STATE.with(|s|s.borrow().generation)==generation{stop(h);}}0},
 0x8003=>{if STATE.with(|s|s.borrow().generation)==w as u64{stop(h);}0},
 0x8001=>{if l as u32==0x202||l as u32==0x205{unsafe{ShowWindow(h,9);SetForegroundWindow(h);}}0},
 0x10=>{exit(h);0},0x2=>{unsafe{PostQuitMessage(0);}0},_=>unsafe{DefWindowProcW(h,m,w,l)}}}
 pub fn run(){unsafe{let instance=GetModuleHandleW(ptr::null());let name=wide("ComputerLinkOwnerProof");let icon=LoadIconW(ptr::null_mut(),32512usize as *const u16);let mut c:Class=mem::zeroed();c.size=mem::size_of::<Class>() as u32;c.proc=Some(procedure);c.instance=instance;c.name=name.as_ptr();c.icon=icon;c.brush=6usize as H;if RegisterClassExW(&c)==0{return}
 let h=CreateWindowExW(0,name.as_ptr(),wide("Computer-Link — disconnected (local proof)").as_ptr(),0x10cf0000,100,100,760,220,ptr::null_mut(),ptr::null_mut(),instance,ptr::null_mut());if h.is_null(){return}
-let menu=CreateMenu();for(id,label)in[(1,"Choose text file"),(2,"Allow status once"),(3,"Allow selected read once"),(6,"Capture window inventory locally"),(8,"Capture folder inventory locally"),(7,"Open selected HTTPS link locally"),(9,"Run local snapshot diagnostic"),(4,"Disconnect"),(5,"Exit")]{AppendMenuW(menu,0,id,wide(label).as_ptr());}SetMenu(h,menu);
+let menu=CreateMenu();for(id,label)in[(1,"Choose text file"),(2,"Allow status once"),(3,"Allow selected read once"),(6,"Capture window inventory locally"),(8,"Capture folder inventory locally"),(7,"Open selected HTTPS link locally"),(9,"Run local snapshot diagnostic"),(10,"Start local status session"),(11,"Check local status"),(4,"Disconnect"),(5,"Exit")]{AppendMenuW(menu,0,id,wide(label).as_ptr());}SetMenu(h,menu);
 let mut n:Nid=mem::zeroed();n.size=mem::size_of::<Nid>() as u32;n.hwnd=h;n.id=1;n.flags=7;n.callback=0x8001;n.icon=icon;let tip=wide("Computer-Link local proof: click to open, Exit disconnects");n.tip[..tip.len()].copy_from_slice(&tip);if Shell_NotifyIconW(0,&n)!=0{STATE.with(|s|s.borrow_mut().tray=Some(n));}
 let mut msg:Msg=mem::zeroed();while GetMessageW(&mut msg,ptr::null_mut(),0,0)>0{TranslateMessage(&msg);DispatchMessageW(&msg);} }}
 }

@@ -95,13 +95,21 @@ impl OwnedWorker {
  /// One bounded wait on a duplicated process handle; no periodic UI polling.
  /// Callback reports exit, timeout, or wait failure without any child output.
  pub fn notify_exit<F>(&self, finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static {
+  self.notify_exit_after(65000,finished)
+ }
+ /// Event-driven live-session wait, released by process exit or Job termination.
+ /// Unlike the finite diagnostic, a healthy interactive session has no idle timeout.
+ pub fn notify_lifetime<F>(&self,finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static {
+  self.notify_exit_after(u32::MAX,finished)
+ }
+ fn notify_exit_after<F>(&self,timeout:u32,finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static {
   unsafe extern "system" {fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;fn GetExitCodeProcess(process:H,code:*mut u32)->i32;}
   let mut observed=ptr::null_mut();
   unsafe{let me=GetCurrentProcess();if DuplicateHandle(me,self.process.0,me,&mut observed,0,0,2)==0{return Err(io::Error::last_os_error())}}
   // Transfer sole ownership to the waiting thread. The child remains Job-owned.
   let observed=Handle(observed);let raw=observed.0 as usize;
   match std::thread::Builder::new().name("computer-link-probe-completion".into()).spawn(move||{
-   let handle=Handle(raw as H);let wait=unsafe{WaitForSingleObject(handle.0,65000)};
+   let handle=Handle(raw as H);let wait=unsafe{WaitForSingleObject(handle.0,timeout)};
    let mut code=0;let result=if wait==0&&unsafe{GetExitCodeProcess(handle.0,&mut code)}!=0{Ok(code)}else{Err(io::Error::other("local probe completion unconfirmed"))};finished(result);
   }) {Ok(_)=>{std::mem::forget(observed);Ok(())},Err(e)=>Err(e)}
  }

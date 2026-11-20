@@ -77,3 +77,32 @@ fn native_owner_probe_destination_deny_success_and_stale_consent(){
 
 #[link(name="kernel32")]unsafe extern "system"{fn OpenProcess(access:u32,inherit:i32,pid:u32)->H;fn WaitForSingleObject(h:H,ms:u32)->u32;fn CloseHandle(h:H)->i32;}
 struct ProcessHandle(H);impl Drop for ProcessHandle{fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
+
+// Real sibling/GUI lifecycle; this never opens a host or grants private data.
+#[test]
+#[ignore = "requires source-built MCP sibling; run by Windows MCP acceptance"]
+fn native_interactive_status_consent_requests_disconnect_and_exit(){
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());
+ let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ for message in [0x8005,0x8006]{let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(h,message,0,1,2,1000,&mut ignored)},0);}
+ assert!(title(h).contains("disconnected"));
+ post(h,0x111,10,0);let d=wait_window(&mut owner.0,"#32770");
+ let no=ready_dialog_button(&mut owner.0,d,7,Instant::now()+Duration::from_secs(5));
+ let body=dialog_body(d,owner.0.id());assert!(body.contains("Destination: this Computer-Link owner only"));assert!(body.contains("No snapshot or file bytes"));assert!(body.contains("computer-link-mcp-session.exe"));post(no,0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ // Late consent cannot start after explicit Disconnect.
+ post(h,0x111,10,0);let d=wait_window(&mut owner.0,"#32770");let yes=ready_dialog_button(&mut owner.0,d,6,Instant::now()+Duration::from_secs(5));post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");post(yes,0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ for exit in [false,true]{
+  post(h,0x111,10,0);let d=wait_window(&mut owner.0,"#32770");click_dialog_button(&mut owner.0,d,6);wait_no_dialog(&mut owner.0);wait_title(&mut owner.0,h,"local status verified");
+  let pid:u32=title(h).split(" | PID ").nth(1).unwrap().parse().unwrap();
+  let child_handle=ProcessHandle(unsafe{OpenProcess(0x100000,0,pid)});assert!(!child_handle.0.is_null());assert_eq!(unsafe{WaitForSingleObject(child_handle.0,0)},258);
+  // Real repeat checks, same live process; no queued or periodic requests.
+  for check in 2..=4{post(h,0x111,11,0);wait_title(&mut owner.0,h,&format!("check {check} |"));assert!(title(h).contains(&format!("PID {pid}")));}
+  post(h,0x111,2,0);let d=wait_window(&mut owner.0,"#32770");click_dialog_button(&mut owner.0,d,1);wait_no_dialog(&mut owner.0);assert!(title(h).contains("local status verified"));
+  for message in [0x8005,0x8006]{let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(h,message,0,1,2,1000,&mut ignored)},0);}
+  assert!(title(h).contains("local status verified"));
+  post(h,0x111,if exit{5}else{4},0);
+  if !exit{wait_title(&mut owner.0,h,"disconnected");}
+  assert_eq!(unsafe{WaitForSingleObject(child_handle.0,3000)},0,"status child survived owner cleanup");
+ }
+ let end=Instant::now()+Duration::from_secs(5);loop{if let Some(status)=owner.0.try_wait().unwrap(){assert!(status.success());break}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(20));}
+}

@@ -2,6 +2,7 @@
 pub mod window_inventory;
 pub mod owned_worker;
 pub mod stdio_pipe;
+pub mod status_protocol;
 pub mod folder_inventory;
 pub mod browser_handoff;
 use std::{io,thread::{self,JoinHandle},time::{Duration,Instant},path::Path,fs::OpenOptions,os::windows::fs::{OpenOptionsExt,MetadataExt},io::Read};
@@ -71,6 +72,10 @@ impl Owner{
   self.owned_worker.as_ref().ok_or_else(||io::Error::other("no owned worker"))?.notify_exit(finished)
  }
  /// Nonblocking diagnostic completion; no content is returned or forwarded.
+ pub fn notify_local_session_exit<F>(&self,finished:F)->io::Result<()> where F:FnOnce(io::Result<u32>)+Send+'static{
+  self.owned_worker.as_ref().ok_or_else(||io::Error::other("no owned worker"))?.notify_lifetime(finished)
+ }
+ pub fn local_worker_pid(&self)->Option<u32>{self.owned_worker.as_ref().map(|worker|worker.pid())}
  pub fn local_worker_exit_code(&self)->io::Result<Option<u32>>{
   match self.owned_worker.as_ref(){Some(worker)=>worker.exit_code(),None=>Ok(None)}
  }
