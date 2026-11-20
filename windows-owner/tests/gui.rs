@@ -81,6 +81,15 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  // This test executable is a separate client process from the owner. Keep actual
  // bytes only in memory and never print captured desktop titles on mismatch.
  let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ // A fresh explicit grant is required for the actual packaged local-client.
+ // Its intentionally redacted stdout verifies length, not content identity;
+ // the independent library roundtrip above retains the exact-byte assertion.
+ post(h,0x111,3,0);let grant=wait_window(&mut owner.0,"#32770");assert_eq!(title(grant),"Explicit local permission");post(unsafe{GetDlgItem(grant,6)},0xf5,0,0);wait_title(&mut owner.0,h,"one local grant");let cli_name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ let mut cli=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
+ let consent=wait_window(&mut owner.0,"#32770");assert_eq!(title(consent),"Authorize connected client");post(unsafe{GetDlgItem(consent,6)},0xf5,0,0);finish_client(&mut cli.0,true);
+ let mut output=String::new();use std::io::Read;cli.0.stdout.take().unwrap().read_to_string(&mut output).unwrap();assert!(output.trim()==format!("authenticated response: {n} bytes"),"packaged client did not report expected bounded response length");
+ wait_title(&mut owner.0,h,"disconnected");
+ let mut replay=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut replay.0,false);
  }
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
