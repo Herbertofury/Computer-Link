@@ -155,7 +155,6 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
 }
 
 #[link(name="user32")]unsafe extern "system"{
- fn AllowSetForegroundWindow(pid:u32)->i32;
  fn GetForegroundWindow()->H;
  fn SetForegroundWindow(h:H)->i32;
  fn PeekMessageW(msg:*mut FocusMsg,h:H,min:u32,max:u32,remove:u32)->i32;
@@ -178,7 +177,7 @@ fn foreign_ready(pid:u32,class:&'static str,id:i32)->(H,H){let end=Instant::now(
  let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(list,0x186,row,0,2,2000,&mut ignored)},0);post(selector,0x111,3,0);
  let(confirm,cancel)=foreign_ready(pid,"#32770",2);assert!(dialog_body(confirm,pid).contains("Disposable installed foreground exact fixture"));
  match mode{
- "success"=>{assert_ne!(unsafe{AllowSetForegroundWindow(pid)},0);let(_,yes)=foreign_ready(pid,"#32770",1);post(yes,0xf5,0,0);pump_until(||unsafe{GetForegroundWindow()}==target.0);},
+ "success"=>{assert_ne!(unsafe{GetForegroundWindow()},target.0,"fixture must not already be foreground before confirmation");let(_,yes)=foreign_ready(pid,"#32770",1);post(yes,0xf5,0,0);pump_until(||unsafe{GetForegroundWindow()}==target.0);},
  "cancel"=>{post(cancel,0xf5,0,0);},
  "disconnect"=>{post(h,0x111,4,0);},
  _=>{post(h,0x111,5,0);finish_client(&mut owner.0,true);}}
