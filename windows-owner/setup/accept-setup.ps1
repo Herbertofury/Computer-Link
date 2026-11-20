@@ -42,6 +42,21 @@ if ((Run-Owned $setup $arguments) -ne 0) { throw 'Disposable setup failed' }
 foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
   if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Installed bytes differ from tested binaries' }
 }
+# Re-run the real GUI workflows against installed bytes, with installed-folder CWD.
+# Test-only routing fails closed if an installed executable is missing; never falls back.
+$previousTestDirectory = $env:COMPUTER_LINK_TEST_INSTALLED_DIR
+try {
+  $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $destination
+  & cargo +1.99.1 test --locked --manifest-path windows-owner/Cargo.toml --test gui --test selection -- --test-threads=1 --nocapture
+  if ($LASTEXITCODE -ne 0) { throw 'Installed native GUI/selection acceptance failed' }
+} finally {
+  $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $previousTestDirectory
+}
+Write-Output 'Installed executable GUI, pairing, selection, cancellation and Exit acceptance passed.'
+# Verify the workflows did not alter either installed program.
+foreach ($name in @('computer-link-owner-proof.exe','local-client.exe')) {
+  if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Installed GUI tests changed program bytes' }
+}
 $marker = Join-Path $destination 'unrelated-synthetic-user-data.txt'
 [IO.File]::WriteAllText($marker,'preserve-this-fixture')
 $refusalLog = Join-Path $root 'reinstall.log'

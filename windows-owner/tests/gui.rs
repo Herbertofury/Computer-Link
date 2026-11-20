@@ -1,7 +1,8 @@
 #![cfg(windows)]
 //! Actual GUI process/window/dialog acceptance on a disposable Windows CI desktop.
 //! Win32 control messages are automation, not pixel/tray-click accessibility QA.
-use std::{ffi::c_void,process::{Command,Child},thread,time::{Duration,Instant},ptr};
+use std::{ffi::c_void,process::Child,thread,time::{Duration,Instant},ptr};
+mod support;
 type H=*mut c_void;
 #[link(name="user32")]unsafe extern "system"{
 fn EnumWindows(cb:Option<unsafe extern "system" fn(H,isize)->i32>,data:isize)->i32;
@@ -21,7 +22,7 @@ struct Guard(Child);impl Drop for Guard{fn drop(&mut self){if self.0.try_wait().
 fn wait_title(child:&mut Child,h:H,part:&str){let end=Instant::now()+Duration::from_secs(5);while !title(h).contains(part){assert!(child.try_wait().unwrap().is_none());assert!(Instant::now()<end,"title did not contain {part}: {}",title(h));thread::sleep(Duration::from_millis(20));}}
 #[test]fn actual_window_denial_grant_disconnect_exit_and_restart(){
 for round in 0..2{
- let mut child=Guard(Command::new(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut child.0,"ComputerLinkOwnerProof");assert!(title(h).contains("disconnected"));
+ let mut child=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut child.0,"ComputerLinkOwnerProof");assert!(title(h).contains("disconnected"));
  // Real owner command opens an actual native MessageBox. Denying leaves no grant.
  post(h,0x111,2,0);let dialog=wait_window(&mut child.0,"#32770");let no=unsafe{GetDlgItem(dialog,7)};assert!(!no.is_null());post(no,0xf5,0,0);
  let deadline=Instant::now()+Duration::from_secs(5);while !window(child.0.id(),"#32770").is_null(){assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(20));}assert!(title(h).contains("disconnected"));
@@ -38,9 +39,9 @@ for round in 0..2{
 fn prepare_status(child:&mut Child,h:H)->String{post(h,0x111,2,0);let dialog=wait_window(child,"#32770");post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);wait_title(child,h,"one local grant");title(h).split(" | ").nth(1).expect("public rendezvous name").to_owned()}
 fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration::from_secs(5);loop{if let Some(status)=child.try_wait().unwrap(){assert_eq!(status.success(),success);break}assert!(Instant::now()<end,"client did not terminate");thread::sleep(Duration::from_millis(20));}}
 #[test]fn actual_gui_authorizes_separate_client_and_invalidates_late_consent(){
- let mut owner=Guard(Command::new(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
  for case in ["deny","allow","wrong-op","late-yes","peer-exit"]{
- let name=prepare_status(&mut owner.0,h);let mut client=Guard(Command::new(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
+ let name=prepare_status(&mut owner.0,h);let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
  let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
  if case=="peer-exit"{client.0.kill().unwrap();client.0.wait().unwrap();}
  if case=="late-yes"{post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");}
@@ -50,7 +51,7 @@ fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration:
  wait_title(&mut owner.0,h,"disconnected");
  post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
  // A completed/denied/revoked session must never accept another connecting client.
- let mut again=Guard(Command::new(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut again.0,false);
+ let mut again=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut again.0,false);
  }
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
@@ -68,7 +69,7 @@ fn wait_no_dialog(owner:&mut Child){let end=Instant::now()+Duration::from_secs(5
 struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsafe{DestroyWindow(self.0);}}}
 #[test]fn actual_inventory_preview_keep_and_paired_read(){
  let class:Vec<u16>="STATIC\0".encode_utf16().collect();let label:Vec<u16>="computer-link-synthetic-inventory-marker\0".encode_utf16().collect();let fixture=SyntheticWindow(unsafe{CreateWindowExW(0,class.as_ptr(),label.as_ptr(),0x10000000,0,0,100,50,ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())});assert!(!fixture.0.is_null());
- let mut owner=Guard(Command::new(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
  // Deny capture, then discard a locally captured preview. Neither creates a grant.
  post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");post(unsafe{GetDlgItem(d,7)},0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
  for keep in [false,true]{
