@@ -11,11 +11,24 @@ type Handle=*mut c_void;
 #[link(name="ntdll")] unsafe extern "system" {
     fn NtCreateFile(out:*mut Handle,access:u32,attrs:*mut Attributes,status:*mut Status,allocation:*const i64,file_attrs:u32,share:u32,disposition:u32,options:u32,ea:Handle,ea_len:u32)->i32;
     fn RtlNtStatusToDosError(status:i32)->u32;
+    fn NtSetInformationFile(file:Handle,status:*mut Status,info:*const c_void,size:u32,class:u32)->i32;
 }
 #[link(name="kernel32")] unsafe extern "system" {
-    fn SetFileInformationByHandle(file:Handle,class:u32,info:*const c_void,size:u32)->i32;
     fn GetVolumeInformationByHandleW(file:Handle,name:*mut u16,name_len:u32,serial:*mut u32,max_component:*mut u32,flags:*mut u32,fs:*mut u16,fs_len:u32)->i32;
 }
+// Microsoft WinBase.h FILE_RENAME_INFO union (DWORD/BOOLEAN), HANDLE,
+// DWORD, WCHAR[1] layout. Native FILE_RENAME_INFORMATION uses the same fields.
+// Explicit x64-only ABI gate: no guessed 32-bit/native ABI support.
+#[cfg(not(target_arch="x86_64"))]
+compile_error!("local export candidate currently supports x86_64 Windows only");
+const _: () = {
+    assert!(std::mem::offset_of!(Rename,replace)==0);
+    assert!(std::mem::offset_of!(Rename,root)==8);
+    assert!(std::mem::offset_of!(Rename,length)==16);
+    assert!(std::mem::offset_of!(Rename,name)==20);
+    assert!(std::mem::size_of::<Rename>()==184);
+    assert!(std::mem::size_of::<Status>()==16);
+};
 struct Root {path:PathBuf,dir:File,_parents:Vec<File>}
 /// Construct only from an explicit owner local selection. Retains locks for the
 /// export lifetime. No remote caller/API is connected to this constructor.
@@ -70,14 +83,15 @@ fn publish_with_writer(root:&File,name:&str,bytes:&[u8],write:impl FnOnce(&mut F
     write(&mut file,bytes).map_err(|e|io::Error::other(format!("unpublished stage may remain ({stage}); do not retry automatically: {e}")))?;
     before_rename();
     let wide:Vec<u16>=name.encode_utf16().collect();
-    let mut rename:Rename=unsafe{std::mem::zeroed()};rename.root=root.as_raw_handle();rename.length=(wide.len()*2) as u32;rename.name[..wide.len()].copy_from_slice(&wide);
-    // ReplaceIfExists FALSE; source is still the exact exclusively held handle.
-    // Supply the complete structure buffer, including tail padding and the
-    // terminating WCHAR; FileNameLength still excludes the terminator.
-    // The fixed zeroed array always has room for 80 code units plus NUL.
-    let size=std::mem::size_of::<Rename>();
-    if unsafe{SetFileInformationByHandle(file.as_raw_handle(),3,&rename as *const _ as *const c_void,size as u32)}==0 {
-        return Err(io::Error::other(format!("publish refused; existing destination preserved, {stage} retained: {}",io::Error::last_os_error())))
+    let mut rename:Rename=unsafe{std::mem::zeroed()};rename.length=(wide.len()*2) as u32;rename.name[..wide.len()].copy_from_slice(&wide);
+    // Native FileRenameInformation: NULL RootDirectory plus a simple leaf means
+    // rename within the source file's existing directory, NOT process cwd.
+    // The source handle is exclusive and its parent/ancestors stay pinned.
+    // ReplaceIfExists remains FALSE. No Win32-relative or joined-path fallback.
+    let mut status=Status{status:0,information:0};
+    let result=unsafe{NtSetInformationFile(file.as_raw_handle(),&mut status,&rename as *const _ as *const c_void,std::mem::size_of::<Rename>() as u32,10)};
+    if result!=0 {
+        return Err(io::Error::other(format!("native publish not confirmed; {stage} retained or outcome uncertain; do not retry: NTSTATUS 0x{:08x}, IO status 0x{:08x}, {}",result as u32,status.status as u32,io::Error::from_raw_os_error(unsafe{RtlNtStatusToDosError(result)} as i32))))
     }
     Ok(()) // atomic namespace publication, NOT a power-loss/directory-fsync claim
 }
@@ -183,6 +197,24 @@ fn publish_with_writer(root:&File,name:&str,bytes:&[u8],write:impl FnOnce(&mut F
             assert!(std::fs::OpenOptions::new().read(true).write(true).open(p.join(&name)).is_ok());
         }
         drop(e);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    #[ignore="subprocess fixture invoked explicitly by same_parent_does_not_use_cwd"]
+    fn same_parent_worker(){
+        let p=PathBuf::from(std::env::var_os("COMPUTER_LINK_SYNTHETIC_ROOT").expect("fixture root"));
+        let e=LocalExport::selected_local_directory(&p).unwrap();
+        assert!(e.preview("context.txt","same-parent").unwrap().confirm(true).unwrap());
+    }
+    #[test] fn same_parent_does_not_use_cwd(){
+        let p=fixture();let other=fixture();
+        let out=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","windows::tests::same_parent_worker","--ignored","--test-threads=1"])
+            .current_dir(&other).env("COMPUTER_LINK_SYNTHETIC_ROOT",&p).output().unwrap();
+        assert!(out.status.success(),"child failed: {} {}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
+        assert_eq!(std::fs::read(p.join("context.txt")).unwrap(),b"same-parent");
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(),0);
+        std::fs::remove_dir_all(p).unwrap();std::fs::remove_dir(other).unwrap();
     }
 
 }

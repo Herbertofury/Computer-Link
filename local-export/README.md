@@ -18,8 +18,9 @@ the installer, or the owner's PC. No executable or public release is produced.
 * Create `<name>.pending` by `NtCreateFile` relative to the retained directory,
   FILE_CREATE, no sharing, FILE_OPEN_REPARSE_POINT, non-directory. Existing stage
   objects are never opened. Write and sync the exact retained file handle.
-* Publish by `SetFileInformationByHandle(FileRenameInfo)` relative to the same
-  directory, ReplaceIfExists FALSE. No second path open, no destination overwrite.
+* Publish by native `NtSetInformationFile(FileRenameInformation)` with NULL root
+  and a simple leaf: documented same-parent rename of the retained source handle,
+  ReplaceIfExists FALSE. No second path open or process-CWD target resolution.
 * Any failed stage is retained for explicit owner review. No automatic cleanup,
   retry, deleting, replacing, executing, remote transfer, or persistent grant.
 * This is namespace publication after complete write, **not** crash/power-loss
@@ -27,8 +28,9 @@ the installer, or the owner's PC. No executable or public release is produced.
 
 ## Holds and remaining gates
 
-This is not a general secure file server or an arbitrary editing API. The native
-backend has cross-compiled but **has not run on Windows**. Exact Windows NTFS
+This is not a general secure file server or an arbitrary editing API. The revised
+native backend has cross-compiled but **has not run on Windows**. Earlier Win32
+backend tests ran and failed publication; see results below. Exact Windows NTFS
 rename and sharing behavior must pass native tests before owner UI wiring. The
 inherited initial directory admission uses sequential Win32 paths, not complete
 handle-relative traversal; hostile DOS-device remapping, kernel/admin interference,
@@ -49,7 +51,7 @@ Cloud `cargo test`: 6 state/validation tests passed. MSVC `cargo check --all-tar
 passed. Authored Windows cases: publish exact bytes, no-overwrite/retained stages,
 Deny/revoke no effects, root rename denial, drop revocation, destination hardlink,
 destination appearing at publication, preexisting staging hardlink; unexecuted.
-Root namespace test inherited from existing source is also unexecuted here.
+These initial authoring notes preceded the native runs described below.
 Cleanup in tests applies only to unique synthetic temp fixtures, never product data.
 
 Official API references consulted 2026-11-20:
@@ -68,4 +70,30 @@ writer refusal, injected partial-write/sync failures, one/80-character names and
 final exclusive-handle release. Injected failures are test seams, not an actual
 hardware fault or power-loss test. Fixture junction creation uses Windows mklink
 only within unique generated disposable directories, refuses shell metacharacters,
-and requires success (no skipped reparse cases). No native result yet.
+and requires success (no skipped reparse cases). Results below supersede the
+initial unexecuted status of these fixtures.
+
+## Native evidence and revised backend status
+
+Win32 source8c66ca0: run44694666726 executed18 tests,16 passed and2 happy-path
+publication cases failed (errors87 and24). Full-buffer source d5e779e:
+run44695029154 again16 passed and2 failed (both error87). No-replace negative
+tests alone are not proof when all rename attempts fail. Both runs produced no
+artifacts and no owner installation. Failed runs remain part of the record.
+
+This revised candidate instead uses the documented native same-parent form.
+ABI comparison with Microsoft's official WinBase.h blob
+b27c338c070353981b59fe3979a5af068fc99c00 found matching offsets, not an ABI bug.
+Compile-time gates now restrict to x86_64 Windows and check field offsets/sizes.
+A subprocess fixture changes only its own CWD to a different synthetic folder
+and checks that publication stays in the selected source parent. The ignored
+worker fixture is invoked explicitly by the normal parent test.
+
+Revised candidate:6 Linux state tests and Windows MSVC all-target compilation
+passed; **native runtime not yet run**, so publication is not confirmed fixed.
+No UI/installer/MCP integration. All trusted/quiescent-root constraints remain.
+
+Native contract references:
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/content/ntifs/nf-ntifs-ntsetinformationfile
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+- https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/WinBase.h
