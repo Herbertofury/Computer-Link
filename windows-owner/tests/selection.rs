@@ -24,12 +24,39 @@ fn editable(container:H,pid:u32)->H{let mut f=Field{pid,h:ptr::null_mut(),seen:v
 fn field(dialog:H,pid:u32)->Field{let mut f=Field{pid,h:ptr::null_mut(),seen:vec![]};unsafe{EnumChildWindows(dialog,Some(filename),&mut f as *mut _ as isize);}f}
 fn post(h:H,m:u32,w:usize,l:isize){assert_ne!(unsafe{PostMessageW(h,m,w,l)},0)}
 fn until(pid:u32,phase:&str,mut f:impl FnMut()->bool){let end=Instant::now()+Duration::from_secs(8);while !f(){if Instant::now()>=end{let d=find(pid,"#32770");let caption=if d.is_null(){String::new()}else{text(d)};let body=if d.is_null(){String::new()}else{content(d)};panic!("native dialog condition timed out: phase={phase}, dialog={}, owner_notice={}, permission={}, selected_notice={}, selection_refused={}, choose_required={}",!d.is_null(),caption=="Computer-Link local proof",caption=="Explicit local permission",body.contains("Nothing shared yet"),body.contains("Selection refused"),body.contains("Choose a bounded UTF-8 file first"));}thread::sleep(Duration::from_millis(20));}}
-// A textual dialog can be discovered before its visible button is ready.
-// WM_COMMAND control notifications carry the actual control HWND (not menu lParam=0).
+// On failure report identity/visibility metadata, never dialog text or paths.
+struct Controls { pid: u32, count: usize }
+unsafe extern "system" fn diagnose_control(h: H, data: isize) -> i32 {
+    let state = unsafe { &mut *(data as *mut Controls) };
+    if state.count >= 40 { return 0; }
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(h, &mut pid); }
+    if pid != state.pid { return 1; }
+    state.count += 1;
+    let mut class = [0u16; 128];
+    let n = unsafe { GetClassNameW(h, class.as_mut_ptr(), class.len() as i32) };
+    let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+    eprintln!("notice child: id={} class={:?} visible={} enabled={}",
+        unsafe { GetDlgCtrlID(h) }, class,
+        unsafe { IsWindowVisible(h) }, unsafe { IsWindowEnabled(h) });
+    1
+}
 fn dismiss_notice(pid:u32,dialog:H){
- let mut button=ptr::null_mut();
- until(pid,"notice-button-ready",||{button=unsafe{GetDlgItem(dialog,1)};let mut dp=0;let mut bp=0;unsafe{GetWindowThreadProcessId(dialog,&mut dp);GetWindowThreadProcessId(button,&mut bp);} !button.is_null()&&dp==pid&&bp==pid&&unsafe{IsWindowVisible(dialog)!=0&&IsWindowEnabled(dialog)!=0&&IsWindowVisible(button)!=0&&IsWindowEnabled(button)!=0}});
- eprintln!("notice readiness: dialog_visible={} dialog_enabled={} button_visible={} button_enabled={} button_id={}",unsafe{IsWindowVisible(dialog)},unsafe{IsWindowEnabled(dialog)},unsafe{IsWindowVisible(button)},unsafe{IsWindowEnabled(button)},unsafe{GetDlgCtrlID(button)});
+ let end=Instant::now()+Duration::from_secs(8);
+ let button=loop {
+    let button=unsafe{GetDlgItem(dialog,1)};let mut dp=0;let mut bp=0;
+    unsafe{GetWindowThreadProcessId(dialog,&mut dp);GetWindowThreadProcessId(button,&mut bp);}
+    let dv=unsafe{IsWindowVisible(dialog)};let de=unsafe{IsWindowEnabled(dialog)};
+    let bv=unsafe{IsWindowVisible(button)};let be=unsafe{IsWindowEnabled(button)};
+    if !button.is_null()&&dp==pid&&bp==pid&&dv!=0&&de!=0&&bv!=0&&be!=0 { break button; }
+    if Instant::now()>=end {
+        eprintln!("notice readiness failed: button_present={} dialog_pid_match={} button_pid_match={} dialog_visible={dv} dialog_enabled={de} button_visible={bv} button_enabled={be}", !button.is_null(), dp==pid, bp==pid);
+        let mut controls=Controls{pid,count:0};
+        unsafe{EnumChildWindows(dialog,Some(diagnose_control),&mut controls as *mut _ as isize);}
+        panic!("notice IDOK control not actionable; assertions preserved");
+    }
+    thread::sleep(Duration::from_millis(20));
+ };
  post(dialog,0x111,1,button as isize);
 }
 struct Guard(Child);impl Drop for Guard{fn drop(&mut self){if self.0.try_wait().ok().flatten().is_none(){let _=self.0.kill();let _=self.0.wait();}}}
