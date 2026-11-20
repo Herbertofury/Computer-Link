@@ -124,7 +124,7 @@ fn file_dialog_case(disconnect_while_open:bool,browser_link:bool,long_link:bool)
  until(pid,"folder-cancel-ready",||{let cancel=unsafe{GetDlgItem(dialog,2)};!cancel.is_null()&&unsafe{IsWindowVisible(cancel)!=0&&IsWindowEnabled(cancel)!=0}});
  post(unsafe{GetDlgItem(dialog,2)},0xf5,0,0);until(pid,"folder-picker-cancelled",||find(pid,"#32770").is_null());
  assert!(text(h).contains("disconnected"));
- post(h,0x111,3,0);until(pid,"folder-cancel-no-capture",||!find(pid,"#32770").is_null());let refusal=find(pid,"#32770");
+ post(h,0x111,3,0);until(pid,"folder-cancel-no-capture",||{let d=find(pid,"#32770");!d.is_null()&&content(d).contains("Choose a bounded UTF-8 file first")});let refusal=find(pid,"#32770");
  assert!(content(refusal).contains("Choose a bounded UTF-8 file first"));dismiss_notice(pid,refusal);
  until(pid,"folder-refusal-dismissed",||find(pid,"#32770").is_null());post(h,0x111,5,0);
  until(pid,"folder-owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());
