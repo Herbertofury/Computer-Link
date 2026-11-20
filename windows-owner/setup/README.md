@@ -16,3 +16,20 @@ The source-only setup baseline at `7bcc5c8601b4dfa5775ac00607568f83018e9797` pas
 The independently repaired native selection test passed on source `7f02098b49adbab23ea3b4f219f0055992e02e5f` in run 44661771655. Its previous failure was a test assumption: the sole informational message-box button on this runner uses control ID 2, not assumed ID 1. The test now finds exactly one owned visible/enabled informational button, requires ID 1 or 2, and retains all permission, cancellation and unchanged-file checks.
 
 The next test-only setup delta runs the full selection acceptance before packaging, then repeats GUI, local pairing, inventory and file-selection/cancellation/Exit workflows against the actually installed owner/client EXEs with installed-folder working directories. Only test code reads `COMPUTER_LINK_TEST_INSTALLED_DIR`; missing installed files fail rather than fall back to build-tree files. The script restores that environment value and rechecks both binary hashes afterward. This extension is not Windows-executed yet. It changes no production access, installer recipe, remote endpoint, autostart, artifact distribution or owner's PC. Pixel/tray-pointer/accessibility QA, signed distribution and direct dot admission remain unverified.
+
+## Installed-runtime result
+Source `29463903f837ebc54303d69564e7b5bb452fc72a` passed Windows run https://github.com/Herbertofury/Computer-Link/actions/runs/44662851103. Pre-install 8 unit + 3 GUI + 1 selection tests passed; following actual setup, 3 GUI + 1 selection tests passed again using installed executables and installed working directories. Both program hashes remained unchanged; reinstall refusal and uninstall preservation passed. Four Python core matrix jobs passed in run 44662851047. Artifacts API confirmed zero uploads. Inventory paired-read coverage uses the test-process library client, while the separately launched local-client EXE is exercised for status/denial/stale-consent cases. No speedup, signing, rendered/pointer/accessibility, owner-PC or direct-dot claim. This supersedes the prior extension-pending note; historical failures are retained.
+
+## Packaged snapshot-read coverage extension
+The GUI inventory acceptance now additionally obtains a fresh explicit one-use read grant and owner approval for the actual packaged `local-client` executable, checks its intentionally redacted byte-count response against the reviewed inventory size, then verifies a second read using the consumed pipe fails. The preceding library-client exact-byte comparison remains unchanged. This does not assert the CLI exposes bytes, nor change runtime or access. Windows-target Rust metadata compilation passed using the existing cached dependency metadata; fresh Cargo check was blocked by absent offline serde index in the recovered environment. Actual Windows CI is pending. No artifacts or owner-PC effects.
+
+Packaged-read extension CI at `fb03222aa1beb1394e4067b842f1fa442c996fe1` (run44664887792) failed BEFORE setup in the existing separate-client grant test: title remained disconnected after clicking Yes. The extended inventory case passed, as did 8 unit tests and other GUI case. Thus new CLI read acceptance is verified only pre-install; installed rerun was not reached. Potential dialog-control readiness race needs diagnosis, not assertion removal; no retry made. Filtered failure retained in evidence/windows-packaged-read-acceptance.txt.
+
+### Bounded consent reliability sample
+The source-only workflow repeats the existing separate-client consent test ten times,
+each with a fresh owner process and all five denial/allow/wrong-operation/late-consent/
+peer-exit cases. It stops on the first failure, retains diagnostics in the CI log and
+never retries a failed iteration. Existing assertions and five-second deadlines are
+unchanged. This is a serial sample on one disposable runner, not concurrency, native
+click accessibility, root-cause proof, or a statistical reliability guarantee. The
+whole job retains its ten-minute timeout and uploads no artifacts.
