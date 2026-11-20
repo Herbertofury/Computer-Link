@@ -18,3 +18,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo +1.99.1 test --locked --manifest-path windows-transport/Cargo.toml -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.99.1 test --locked --manifest-path windows-workspace/Cargo.toml -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
