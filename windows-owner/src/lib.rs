@@ -143,3 +143,5 @@ impl Drop for Owner{fn drop(&mut self){let _=self.disconnect();}}
  #[test]fn actual_file_snapshot_is_bounded_and_immutable(){let dir=std::env::temp_dir().join(format!("owner-snapshot-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let file=dir.join("chosen.txt");std::fs::write(&file,b"first").unwrap();let captured=snapshot(&file).unwrap();std::fs::write(&file,b"second").unwrap();assert_eq!(captured,b"first");std::fs::write(&file,vec![0;4097]).unwrap();assert!(snapshot(&file).is_err());std::fs::write(&file,[255]).unwrap();assert!(snapshot(&file).is_err());std::fs::write(&file,b"valid").unwrap();std::fs::hard_link(&file,dir.join("alias.txt")).unwrap();assert_eq!(snapshot(&file).unwrap_err().to_string(),"single-link handle required");assert_eq!(std::fs::read(&file).unwrap(),b"valid");std::fs::remove_dir_all(dir).unwrap();}
  #[test]fn invalid_snapshot_creates_no_session(){let mut o=Owner::default();assert!(o.allow_once(Some(vec![0;4097])).is_err());assert!(o.active.is_none());assert!(o.allow_once(Some(vec![255])).is_err());}
 }
+
+pub mod window_focus;
