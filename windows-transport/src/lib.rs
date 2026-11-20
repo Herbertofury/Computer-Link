@@ -5,6 +5,10 @@ type H=*mut c_void;
 #[repr(C)]struct SA{len:u32,sd:H,inherit:i32}
 #[repr(C)]struct Ov{internal:usize,high:usize,offset:u32,offset_high:u32,event:H}
 #[link(name="kernel32")]unsafe extern "system"{
+ fn GetNamedPipeClientProcessId(h:H,p:*mut u32)->i32;fn GetNamedPipeServerProcessId(h:H,p:*mut u32)->i32;
+ fn OpenProcess(access:u32,inherit:i32,pid:u32)->H;fn QueryFullProcessImageNameW(h:H,flags:u32,b:*mut u16,n:*mut u32)->i32;
+ fn GetProcessTimes(h:H,created:*mut u64,exit:*mut u64,kernel:*mut u64,user:*mut u64)->i32;
+ fn CreateFileW(n:*const u16,access:u32,share:u32,sa:*const SA,creation:u32,flags:u32,template:H)->H;
  fn CloseHandle(h:H)->i32;fn GetCurrentProcess()->H;fn LocalFree(p:H)->H;
  fn CreateEventW(sa:*const SA,manual:i32,initial:i32,name:*const u16)->H;fn SetEvent(h:H)->i32;
  fn WaitForMultipleObjects(n:u32,h:*const H,all:i32,ms:u32)->u32;fn WaitForSingleObject(h:H,ms:u32)->u32;
@@ -33,7 +37,18 @@ fn user_sd()->io::Result<Local>{unsafe{
  // Explicit protected DACL only current user, not Everyone/Anonymous default.
  let s=wide(&format!("D:P(A;;GA;;;{sid})"));let mut sd=ptr::null_mut();if ConvertStringSecurityDescriptorToSecurityDescriptorW(s.as_ptr(),1,&mut sd,ptr::null_mut())==0{return Err(io::Error::last_os_error())}Ok(Local(sd))
 }}
-#[derive(Clone)]pub struct Stop(Arc<Owned>);impl Stop{pub fn revoke(&self)->io::Result<()>{if unsafe{SetEvent(self.0.0)}==0{Err(io::Error::last_os_error())}else{Ok(())}}}
+#[derive(Clone)]pub struct Stop(Arc<Owned>);impl Stop{pub fn stopped(&self)->bool{unsafe{WaitForSingleObject(self.0.0,0)==0}}pub fn revoke(&self)->io::Result<()>{if unsafe{SetEvent(self.0.0)}==0{Err(io::Error::last_os_error())}else{Ok(())}}}
+#[derive(Clone,Debug)]pub struct PeerInfo{pub pid:u32,pub image:String,pub created:u64}
+struct Peer{info:PeerInfo,handle:Arc<Owned>}
+impl Peer{
+ fn inspect(pipe:H,client:bool)->io::Result<Self>{let mut pid=0;let ok=unsafe{if client{GetNamedPipeClientProcessId(pipe,&mut pid)}else{GetNamedPipeServerProcessId(pipe,&mut pid)}};if ok==0||pid==0{return Err(io::Error::other("peer identity unavailable"))}
+ let handle=owned(unsafe{OpenProcess(0x101000,0,pid)})?;let mut again=0;let ok=unsafe{if client{GetNamedPipeClientProcessId(pipe,&mut again)}else{GetNamedPipeServerProcessId(pipe,&mut again)}};if ok==0||again!=pid{return Err(io::Error::other("peer changed"))}
+ let mut b=vec![0u16;32768];let mut n=b.len() as u32;if unsafe{QueryFullProcessImageNameW(handle.0,0,b.as_mut_ptr(),&mut n)}==0{return Err(io::Error::other("peer image unavailable"))}let image=String::from_utf16(&b[..n as usize]).map_err(|_|io::Error::other("peer image invalid"))?;
+ let(mut created,mut exit,mut kernel,mut user)=(0u64,0u64,0u64,0u64);if unsafe{GetProcessTimes(handle.0,&mut created,&mut exit,&mut kernel,&mut user)}==0{return Err(io::Error::other("peer lifetime unavailable"))}
+ let peer=Self{info:PeerInfo{pid,image,created},handle};peer.live()?;Ok(peer)
+ }
+ fn live(&self)->io::Result<()>{if unsafe{WaitForSingleObject(self.handle.0,0)}!=258{return Err(io::Error::other("peer exited or unavailable"))}Ok(())}
+}
 pub struct Server{pipe:Arc<Owned>,stop:Stop,name:String,token:[u8;32],end:Instant}
 // Heap-owned buffers/OVERLAPPED remain alive until terminal completion. On an
 // unconfirmed cancellation they are intentionally retained, never freed early.
@@ -72,12 +87,37 @@ impl Server{
  pub fn serve_selected_read(self,selected:computer_link_workspace_candidate::SelectedRead)->io::Result<bool>{self.serve_inner(Some(Box::new(move || { let mut selected=selected; selected.read() })))}
  pub fn serve_once(self)->io::Result<bool>{self.serve_inner(None)}
  pub fn serve_snapshot(self,bytes:Vec<u8>)->io::Result<bool>{if bytes.len()>4096||std::str::from_utf8(&bytes).is_err(){return Err(io::Error::other("snapshot refused"))}self.serve_inner(Some(Box::new(move || Ok(bytes))))}
- fn serve_inner(self,selected:Option<Box<dyn FnOnce()->io::Result<Vec<u8>>>>)->io::Result<bool>{self.operation(0,vec![])?;let b=self.operation(1,vec![0;33])?;
+ pub fn serve_paired<F>(self,bytes:Option<Vec<u8>>,approve:F)->io::Result<bool> where F:FnOnce(PeerInfo,Instant,Stop)->io::Result<bool>{
+ if let Some(b)=&bytes{if b.len()>4096||std::str::from_utf8(b).is_err(){return Err(io::Error::other("snapshot refused"))}}
+ self.operation(0,vec![])?;let peer=Peer::inspect(self.pipe.0,true)?;
+ if !approve(peer.info.clone(),self.end,self.stop.clone())?{return Err(io::Error::other("pairing denied"))}
+ peer.live()?;if Instant::now()>=self.end||self.stop.stopped(){return Err(io::Error::other("session stopped"))}
+ if self.operation(2,self.token.to_vec())?.len()!=32{return Err(io::Error::other("short pairing write"))}
+ let selected=bytes.map(|b|Box::new(move||Ok(b)) as Box<dyn FnOnce()->io::Result<Vec<u8>>>);self.request(selected,Some(peer))
+ }
+ fn serve_inner(self,selected:Option<Box<dyn FnOnce()->io::Result<Vec<u8>>>>)->io::Result<bool>{self.operation(0,vec![])?;self.request(selected,None)}
+ fn request(self,selected:Option<Box<dyn FnOnce()->io::Result<Vec<u8>>>>,peer:Option<Peer>)->io::Result<bool>{let b=self.operation(1,vec![0;33])?;
   if b.len()!=33{return Err(io::Error::other("frame refused"))}let diff=b[..32].iter().zip(self.token).fold(0u8,|a,(x,y)|a|(x^y));if diff!=0{return Err(io::Error::other("unauthorized"))}
   if Instant::now()>=self.end||unsafe{WaitForSingleObject(self.stop.0.0,0)}==0{return Err(io::Error::other("session stopped"))}
-  match b[32]{2=>{let selected=selected.ok_or_else(||io::Error::other("capability not granted"))?;let data=selected()?;if data.len()>4096{return Err(io::Error::other("read bound refused"))}let mut frame=(data.len() as u32).to_be_bytes().to_vec();frame.extend(data);let expected=frame.len();if self.operation(2,frame)?.len()!=expected{return Err(io::Error::other("short response write"))}Ok(false)},0=>{if self.operation(2,vec![1])?.len()!=1{return Err(io::Error::other("short response write"))}Ok(false)},1=>{self.stop.revoke()?;Ok(true)},_=>Err(io::Error::other("capability refused"))}
+  if let Some(p)=&peer{p.live()?}
+  match b[32]{2=>{let selected=selected.ok_or_else(||io::Error::other("capability not granted"))?;let data=selected()?;if data.len()>4096{return Err(io::Error::other("read bound refused"))}let mut frame=(data.len() as u32).to_be_bytes().to_vec();frame.extend(data);let expected=frame.len();if let Some(p)=&peer{p.live()?}if self.operation(2,frame)?.len()!=expected{return Err(io::Error::other("short response write"))}Ok(false)},0=>{if let Some(p)=&peer{p.live()?}if self.operation(2,vec![1])?.len()!=1{return Err(io::Error::other("short response write"))}Ok(false)},1=>{self.stop.revoke()?;Ok(true)},_=>Err(io::Error::other("capability refused"))}
  }
 }
+/// One-shot local client. Rendezvous/PID are public; bearer stays on this pipe.
+pub fn paired_client(name:&str,owner_pid:u32,opcode:u8)->io::Result<Vec<u8>>{
+ let prefix=r"\\.\pipe\computer-link-";let suffix=name.strip_prefix(prefix).ok_or_else(||io::Error::other("local rendezvous required"))?;
+ if suffix.len()!=64||!suffix.bytes().all(|b|b.is_ascii_hexdigit())||!matches!(opcode,0|2){return Err(io::Error::other("client scope refused"))}
+ // OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION: no impersonation grant.
+ let pipe=owned(unsafe{CreateFileW(wide(name).as_ptr(),0xc0000000,0,ptr::null(),3,0x40110000,ptr::null_mut())})?;
+ let peer=Peer::inspect(pipe.0,false)?;if peer.info.pid!=owner_pid{return Err(io::Error::other("unexpected owner process"))}
+ let endpoint=Server{pipe,stop:Stop(event()?),name:name.to_owned(),token:[0;32],end:Instant::now()+Duration::from_secs(60)};
+ let token=endpoint.operation(1,vec![0;32])?;if token.len()!=32{return Err(io::Error::other("pairing refused"))}peer.live()?;
+ let mut request=token;request.push(opcode);if endpoint.operation(2,request)?.len()!=33{return Err(io::Error::other("short request"))}
+ let exact=|n:usize|->io::Result<Vec<u8>>{let mut bytes=Vec::with_capacity(n);while bytes.len()<n{peer.live()?;let part=endpoint.operation(1,vec![0;n-bytes.len()])?;if part.is_empty(){return Err(io::Error::other("truncated response"))}bytes.extend(part);}Ok(bytes)};
+ if opcode==0{let bytes=exact(1)?;peer.live()?;if bytes!=[1]{return Err(io::Error::other("status refused"))}return Ok(bytes)}
+ let header=exact(4)?;let len=u32::from_be_bytes(header.try_into().unwrap()) as usize;if len>4096{return Err(io::Error::other("response bound refused"))}let bytes=exact(len)?;peer.live()?;Ok(bytes)
+}
+
 #[cfg(test)]mod tests{
  use super::*;use std::{fs::OpenOptions,io::{Read,Write},thread};
  fn fixture()->std::path::PathBuf{std::env::temp_dir().join(format!("computer-link-read-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))}

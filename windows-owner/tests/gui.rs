@@ -33,3 +33,22 @@ for round in 0..2{
  assert!(window(child.0.id(),"ComputerLinkOwnerProof").is_null());
 }
 }
+
+fn prepare_status(child:&mut Child,h:H)->String{post(h,0x111,2,0);let dialog=wait_window(child,"#32770");post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);wait_title(child,h,"one local grant");title(h).split(" | ").nth(1).expect("public rendezvous name").to_owned()}
+fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration::from_secs(5);loop{if let Some(status)=child.try_wait().unwrap(){assert_eq!(status.success(),success);break}assert!(Instant::now()<end,"client did not terminate");thread::sleep(Duration::from_millis(20));}}
+#[test]fn actual_gui_authorizes_separate_client_and_invalidates_late_consent(){
+ let mut owner=Guard(Command::new(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ for case in ["deny","allow","wrong-op","late-yes","peer-exit"]{
+ let name=prepare_status(&mut owner.0,h);let mut client=Guard(Command::new(env!("CARGO_BIN_EXE_local-client")).arg(owner.0.id().to_string()).arg(&name).arg(if case=="wrong-op"{"read"}else{"status"}).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
+ let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
+ if case=="peer-exit"{client.0.kill().unwrap();client.0.wait().unwrap();}
+ if case=="late-yes"{post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");}
+ post(unsafe{GetDlgItem(prompt,if case=="deny"{7}else{6})},0xf5,0,0);
+ if case!="peer-exit"{finish_client(&mut client.0,case=="allow");}
+ let mut out=String::new();use std::io::Read;client.0.stdout.take().unwrap().read_to_string(&mut out).unwrap();if case=="allow"{assert_eq!(out.trim(),"authenticated response: 1 bytes")}else{assert!(out.is_empty())}
+ post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ // A completed/denied/revoked session must never accept another connecting client.
+ let mut again=Guard(Command::new(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut again.0,false);
+ }
+ post(h,0x111,5,0);finish_client(&mut owner.0,true);
+}

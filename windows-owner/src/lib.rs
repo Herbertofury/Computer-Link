@@ -1,6 +1,6 @@
 #![cfg(windows)]
 use std::{io,thread::{self,JoinHandle},time::{Duration,Instant},path::Path,fs::OpenOptions,os::windows::fs::{OpenOptionsExt,MetadataExt},io::Read};
-use computer_link_local_transport::{Server,Stop};
+use computer_link_local_transport::{Server,Stop,PeerInfo};
 #[path="../../windows-workspace/src/root_scope.rs"] mod root_scope;
 /// Read a bounded immutable snapshot through a non-reparse single-link handle.
 /// Trusted/quiescent local ancestors only; not a hostile filesystem sandbox.
@@ -24,6 +24,11 @@ impl Owner{
  if let Some(b)=&snapshot{if b.len()>4096||std::str::from_utf8(b).is_err(){return Err(io::Error::other("snapshot refused"))}}
  let server=Server::new(Duration::from_secs(60))?;let pairing=server.pairing();let stop=server.stop();
  let worker=thread::Builder::new().name("computer-link-local-session".into()).spawn(move||match snapshot{Some(b)=>server.serve_snapshot(b),None=>server.serve_once()})?;self.active=Some((stop,worker));Ok(pairing)
+ }
+ pub fn allow_paired<F>(&mut self,snapshot:Option<Vec<u8>>,approve:F)->io::Result<String> where F:FnOnce(PeerInfo,Instant,Stop)->io::Result<bool>+Send+'static{
+ if self.active.is_some()||self.fenced{return Err(io::Error::other("disconnect before another grant"))}
+ if let Some(b)=&snapshot{if b.len()>4096||std::str::from_utf8(b).is_err(){return Err(io::Error::other("snapshot refused"))}}
+ let server=Server::new(Duration::from_secs(60))?;let name=server.pairing().0;let stop=server.stop();let worker=thread::Builder::new().name("computer-link-paired-session".into()).spawn(move||server.serve_paired(snapshot,approve))?;self.active=Some((stop,worker));Ok(name)
  }
  pub fn disconnect(&mut self)->io::Result<()>{
  let Some((stop,worker))=self.active.as_ref()else{return if self.fenced{Err(io::Error::other("shutdown remains unconfirmed; exit process required"))}else{Ok(())}};self.fenced=true;stop.revoke()?;

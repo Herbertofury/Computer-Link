@@ -1,7 +1,7 @@
 #![cfg_attr(windows,windows_subsystem="windows")]
 #[cfg(not(windows))]fn main(){eprintln!("Windows only");}
 #[cfg(windows)]mod gui{
-use std::{ffi::c_void,ptr,mem,cell::RefCell,path::PathBuf,os::windows::ffi::OsStringExt};
+use std::{ffi::c_void,ptr,mem,cell::RefCell,path::PathBuf,os::windows::ffi::OsStringExt,sync::mpsc,time::{Instant,Duration}};
 use computer_link_owner_proof::{Owner,snapshot};
 type H=*mut c_void;
 #[repr(C)]struct Point{x:i32,y:i32}
@@ -12,18 +12,19 @@ type H=*mut c_void;
 #[link(name="user32")]unsafe extern "system"{
 fn RegisterClassExW(c:*const Class)->u16;fn CreateWindowExW(ex:u32,class:*const u16,title:*const u16,style:u32,x:i32,y:i32,w:i32,h:i32,parent:H,menu:H,instance:H,param:H)->H;
 fn DefWindowProcW(h:H,m:u32,w:usize,l:isize)->isize;fn GetMessageW(m:*mut Msg,h:H,min:u32,max:u32)->i32;fn TranslateMessage(m:*const Msg)->i32;fn DispatchMessageW(m:*const Msg)->isize;fn PostQuitMessage(code:i32);fn DestroyWindow(h:H)->i32;fn ShowWindow(h:H,n:i32)->i32;fn SetForegroundWindow(h:H)->i32;
-fn MessageBoxW(h:H,text:*const u16,title:*const u16,flags:u32)->i32;fn CreateMenu()->H;fn AppendMenuW(menu:H,flags:u32,id:usize,text:*const u16)->i32;fn SetMenu(h:H,menu:H)->i32;fn SetWindowTextW(h:H,text:*const u16)->i32;fn LoadIconW(i:H,name:*const u16)->H;
+fn PostMessageW(h:H,m:u32,w:usize,l:isize)->i32;fn MessageBoxW(h:H,text:*const u16,title:*const u16,flags:u32)->i32;fn CreateMenu()->H;fn AppendMenuW(menu:H,flags:u32,id:usize,text:*const u16)->i32;fn SetMenu(h:H,menu:H)->i32;fn SetWindowTextW(h:H,text:*const u16)->i32;fn LoadIconW(i:H,name:*const u16)->H;
 }
 #[link(name="kernel32")]unsafe extern "system"{fn GetModuleHandleW(n:*const u16)->H;fn ExitProcess(code:u32)->!;}
 #[link(name="shell32")]unsafe extern "system"{fn Shell_NotifyIconW(m:u32,n:*const Nid)->i32;}
 #[link(name="comdlg32")]unsafe extern "system"{fn GetOpenFileNameW(o:*mut Ofn)->i32;}
-struct State{owner:Owner,selected:Option<(PathBuf,Vec<u8>)>,tray:Option<Nid>}
-thread_local!{static STATE:RefCell<State>=RefCell::new(State{owner:Owner::default(),selected:None,tray:None});}
+struct Prompt{peer:computer_link_local_transport::PeerInfo,generation:u64,end:Instant,reply:mpsc::Sender<bool>}
+struct State{owner:Owner,selected:Option<(PathBuf,Vec<u8>)>,tray:Option<Nid>,generation:u64,scope:String,prompts:Option<mpsc::Receiver<Prompt>>}
+thread_local!{static STATE:RefCell<State>=RefCell::new(State{owner:Owner::default(),selected:None,tray:None,generation:0,scope:String::new(),prompts:None});}
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 fn notice(h:H,s:&str){unsafe{MessageBoxW(h,wide(s).as_ptr(),wide("Computer-Link local proof").as_ptr(),0x40);}}
 fn choose(h:H)->Option<PathBuf>{let mut b=vec![0u16;32768];let mut o:Ofn=unsafe{mem::zeroed()};o.size=mem::size_of::<Ofn>() as u32;o.owner=h;o.file=b.as_mut_ptr();o.max_file=b.len() as u32;o.flags=0x80000|0x1000|0x800|0x8|0x100000; // Explorer, file/path must exist, no cwd change, no link dereference.
 if unsafe{GetOpenFileNameW(&mut o)}==0{return None}let n=b.iter().position(|v|*v==0)?;Some(PathBuf::from(std::ffi::OsString::from_wide(&b[..n])))}
-fn stop(h:H)->bool{let result=STATE.with(|s|s.borrow_mut().owner.disconnect());match result{Ok(())=>{unsafe{SetWindowTextW(h,wide("Computer-Link — disconnected (local proof)").as_ptr());}true},Err(e)=>{notice(h,&format!("Disconnect could not confirm cleanup: {e}. Exit ends this process; do not start another session."));false}}}
+fn stop(h:H)->bool{let result=STATE.with(|s|{let mut s=s.borrow_mut();s.generation=s.generation.wrapping_add(1);s.prompts=None;s.owner.disconnect()});match result{Ok(())=>{unsafe{SetWindowTextW(h,wide("Computer-Link — disconnected (local proof)").as_ptr());}true},Err(e)=>{notice(h,&format!("Disconnect could not confirm cleanup: {e}. Exit ends this process; do not start another session."));false}}}
 fn exit(h:H){let clean=stop(h);STATE.with(|s|{if let Some(n)=s.borrow_mut().tray.take(){unsafe{Shell_NotifyIconW(2,&n);}}});if !clean{unsafe{ExitProcess(2)}}unsafe{DestroyWindow(h);}}
 unsafe extern "system" fn procedure(h:H,m:u32,w:usize,l:isize)->isize{
 match m{
@@ -31,11 +32,14 @@ match m{
 1=>{if stop(h){STATE.with(|s|s.borrow_mut().selected=None);if let Some(path)=choose(h){match snapshot(&path){Ok(bytes)=>{let count=bytes.len();STATE.with(|s|s.borrow_mut().selected=Some((path.clone(),bytes)));notice(h,&format!("Selected {} bytes from {}. Nothing shared yet. Allow once grants this captured text only, not future file changes.",count,path.display()));},Err(e)=>notice(h,&format!("Selection refused: {e}"))}}}},
 2|3=>{let selected=STATE.with(|s|s.borrow().selected.clone());if w&0xffff==3&&selected.is_none(){notice(h,"Choose a bounded UTF-8 file first.");return 0}
 let detail=if w&0xffff==3{format!("Allow ONE local paired read of the captured {} bytes from {}?",selected.as_ref().unwrap().1.len(),selected.as_ref().unwrap().0.display())}else{"Allow ONE local paired status request?".to_owned()};
-let text=format!("{detail}\nExpires after 60 seconds. No write, delete, browser, network or administrator authority. Disconnect or Exit revokes this session. This proof has no external client pairing UI and does NOT connect ChatGPT.");
+let text=format!("{detail}\nExpires after 60 seconds. No write, delete, browser, network or administrator authority. Disconnect or Exit revokes this session. A connecting local process requires a second explicit approval. This proof does NOT connect ChatGPT.");
 if unsafe{MessageBoxW(h,wide(&text).as_ptr(),wide("Explicit local permission").as_ptr(),0x104)}==6{
-let bytes=if w&0xffff==3{selected.map(|s|s.1)}else{None};let result=STATE.with(|s|s.borrow_mut().owner.allow_once(bytes));match result{Ok(_internal_pairing)=>{unsafe{SetWindowTextW(h,wide("Computer-Link — one local grant (60s maximum)").as_ptr());}},Err(e)=>notice(h,&e.to_string())}
+let bytes=if w&0xffff==3{selected.map(|s|s.1)}else{None};let (tx,rx)=mpsc::channel();let generation=STATE.with(|s|{let mut s=s.borrow_mut();s.generation=s.generation.wrapping_add(1);s.prompts=Some(rx);s.scope=match &bytes{Some(b)=>format!("Read only the captured {} UTF-8 bytes",b.len()),None=>"Status only; no file bytes".to_owned()};s.generation});let hwnd=h as usize;
+let result=STATE.with(|s|s.borrow_mut().owner.allow_paired(bytes,move|peer,end,stop|{let(reply,answer)=mpsc::channel();tx.send(Prompt{peer,generation,end,reply}).map_err(|_|std::io::Error::other("owner unavailable"))?;if unsafe{PostMessageW(hwnd as H,0x8002,0,0)}==0{return Err(std::io::Error::other("owner dispatch failed"))}loop{if Instant::now()>=end||stop.stopped(){return Err(std::io::Error::other("approval expired or revoked"))}match answer.recv_timeout(Duration::from_millis(20)){Ok(v)=>return Ok(v),Err(mpsc::RecvTimeoutError::Disconnected)=>return Ok(false),Err(mpsc::RecvTimeoutError::Timeout)=>{}}}}));
+match result{Ok(name)=>{unsafe{SetWindowTextW(h,wide(&format!("Computer-Link — one local grant | {name}")).as_ptr());}},Err(e)=>notice(h,&e.to_string())}
 }},
 4=>{stop(h);},5=>exit(h),_=>{}}0},
+0x8002=>{let prompt=STATE.with(|s|s.borrow().prompts.as_ref().and_then(|rx|rx.try_recv().ok()));if let Some(p)=prompt{let current=STATE.with(|s|s.borrow().generation);if current==p.generation&&Instant::now()<p.end{let path:String=p.peer.image.chars().map(|c|if c.is_control(){'�'}else{c}).collect();let scope=STATE.with(|s|s.borrow().scope.clone());let text=format!("Authorize this connected local process for the prepared one-use grant?\nScope: {scope}\nPID: {}\nUnverified executable path: {}\nCreation identity: {}\nNo signer verification. No write/delete/admin/browser access. No reconnect reuse.",p.peer.pid,path,p.peer.created);let yes=unsafe{MessageBoxW(h,wide(&text).as_ptr(),wide("Authorize connected client").as_ptr(),0x104)}==6;let valid=STATE.with(|s|s.borrow().generation==p.generation)&&Instant::now()<p.end;let _=p.reply.send(yes&&valid);}else{let _=p.reply.send(false);}}0},
 0x8001=>{if l as u32==0x202||l as u32==0x205{unsafe{ShowWindow(h,9);SetForegroundWindow(h);}}0},
 0x10=>{exit(h);0},0x2=>{unsafe{PostQuitMessage(0);}0},_=>unsafe{DefWindowProcW(h,m,w,l)}}}
 pub fn run(){unsafe{let instance=GetModuleHandleW(ptr::null());let name=wide("ComputerLinkOwnerProof");let icon=LoadIconW(ptr::null_mut(),32512usize as *const u16);let mut c:Class=mem::zeroed();c.size=mem::size_of::<Class>() as u32;c.proc=Some(procedure);c.instance=instance;c.name=name.as_ptr();c.icon=icon;c.brush=6usize as H;if RegisterClassExW(&c)==0{return}

@@ -15,3 +15,13 @@ Official API references:
 - https://learn.microsoft.com/en-us/windows/win32/shell/notification-area
 
 Release holds: reviewed pairing/client identity and user-visible permissions, full real UI/Exit process acceptance, file-identity/ACL race policy, other-user/same-user threat tests, external dot admission, browser/app control and installer signing/distribution. No release clearance implied by a future CI pass.
+
+
+## Local paired-client draft (supersedes missing-handoff statements above)
+The GUI can now prepare a grant and display only a random public rendezvous pipe name. A separate `local-client OWNER_PID PIPE_NAME status|read` process connects. A second native dialog identifies the observed PID, creation time and **unverified** executable path, with the captured capability. Only Yes for this pending session sends a one-use bearer on that existing pipe. Tokens and captured contents never enter argv/environment/clipboard/files/logs; client stdout reports response byte count only. This local client is not ChatGPT and does not create a remote endpoint.
+
+The server pins a process handle, rechecks pipe PID after opening it, and checks liveness before token and response. A session generation plus original deadline/stop state invalidates late GUI approval. No lock/RefCell borrow spans the modal dialog. Denied/expired/disconnected sessions cannot be reused. The client validates expected owner PID and requests explicit SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION, never default impersonation. No ImpersonateNamedPipeClient call is used.
+
+PID reuse during lookup/open, duplicated pipe handles, same-user injection and executable-path tampering remain explicit exclusions, not solved by repeating a numeric PID check. A path is not signature/hash authentication. This is suitable only for isolated disposable local proof, not broad access or release. New separate-process GUI pairing tests cover denial, approval with actual status response, wrong opcode, late Yes after Disconnect, peer exit and refused session reuse. New tests are compile-checked but not Windows-executed yet; prior GUI-only CI does not qualify these changes. Snapshot-read UI selection, rendered/tray-pointer QA and accessibility remain untested.
+
+Primary API sources: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid and https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew .
