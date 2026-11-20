@@ -42,8 +42,10 @@ for round in 0..2{
 #[derive(Debug)]struct GrantDiagnostic{dialog_present:bool,permission_title:bool,client_title:bool,notice_title:bool,yes_present:bool,yes_visible:bool,yes_enabled:bool,yes_owned:bool}
 fn grant_diagnostic(dialog:H,pid:u32)->GrantDiagnostic{let yes=unsafe{GetDlgItem(dialog,6)};let mut actual=0;if !yes.is_null(){unsafe{GetWindowThreadProcessId(yes,&mut actual);}}let t=if dialog.is_null(){String::new()}else{title(dialog)};GrantDiagnostic{dialog_present:!dialog.is_null()&&unsafe{IsWindow(dialog)}!=0,permission_title:t=="Explicit local permission",client_title:t=="Authorize connected client",notice_title:t=="Computer-Link local proof",yes_present:!yes.is_null(),yes_visible:!yes.is_null()&&unsafe{IsWindowVisible(yes)}!=0,yes_enabled:!yes.is_null()&&unsafe{IsWindowEnabled(yes)}!=0,yes_owned:!yes.is_null()&&actual==pid}}
 fn prepare_status(child:&mut Child,h:H,case:&str)->String{
- post(h,0x111,2,0);let dialog=wait_window(child,"#32770");let before=grant_diagnostic(dialog,child.id());post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);
- let end=Instant::now()+Duration::from_secs(5);while !title(h).contains("one local grant"){
+ post(h,0x111,2,0);let dialog=wait_window(child,"#32770");let end=Instant::now()+Duration::from_secs(5);
+ let before=loop{let d=grant_diagnostic(dialog,child.id());if d.permission_title&&d.yes_present&&d.yes_visible&&d.yes_enabled&&d.yes_owned{break d}assert!(child.try_wait().unwrap().is_none(),"grant case {case}: owner exited before button ready");assert!(Instant::now()<end,"grant case {case}: permission button not ready; state={d:?}");thread::sleep(Duration::from_millis(20));};
+ post(unsafe{GetDlgItem(dialog,6)},0xf5,0,0);
+ while !title(h).contains("one local grant"){
  assert!(child.try_wait().unwrap().is_none(),"grant case {case}: owner exited");
  if Instant::now()>=end{let after=grant_diagnostic(window(child.id(),"#32770"),child.id());panic!("grant case {case}: no local grant; before={before:?}; after={after:?}")}
  thread::sleep(Duration::from_millis(20));
