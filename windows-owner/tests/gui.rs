@@ -52,3 +52,32 @@ fn finish_client(child:&mut Child,success:bool){let end=Instant::now()+Duration:
  }
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
+
+#[link(name="user32")]unsafe extern "system"{
+ fn EnumChildWindows(h:H,cb:Option<unsafe extern "system" fn(H,isize)->i32>,d:isize)->i32;
+ fn SendMessageTimeoutW(h:H,m:u32,w:usize,l:isize,f:u32,ms:u32,r:*mut usize)->isize;
+ fn CreateWindowExW(ex:u32,class:*const u16,title:*const u16,style:u32,x:i32,y:i32,w:i32,h:i32,parent:H,menu:H,instance:H,param:H)->H;
+ fn DestroyWindow(h:H)->i32;
+}
+struct Texts{pid:u32,text:String,failed:bool}
+unsafe extern "system" fn static_text(h:H,d:isize)->i32{let s=unsafe{&mut*(d as *mut Texts)};let mut pid=0;unsafe{GetWindowThreadProcessId(h,&mut pid);}let mut class=[0;32];let n=unsafe{GetClassNameW(h,class.as_mut_ptr(),32)};if pid!=s.pid||n<=0||String::from_utf16_lossy(&class[..n as usize])!="Static"{return 1}let mut b=[0;8192];let mut n=0;let ok=unsafe{SendMessageTimeoutW(h,0xd,b.len(),b.as_mut_ptr() as isize,2,2000,&mut n)};if ok==0||n>=b.len(){s.failed=true;return 0}s.text.push_str(&String::from_utf16_lossy(&b[..n]));1}
+fn dialog_body(h:H,pid:u32)->String{let mut s=Texts{pid,text:String::new(),failed:false};unsafe{EnumChildWindows(h,Some(static_text),&mut s as *mut _ as isize);}assert!(!s.failed,"bounded dialog text read failed");s.text}
+fn wait_no_dialog(owner:&mut Child){let end=Instant::now()+Duration::from_secs(5);while !window(owner.id(),"#32770").is_null(){assert!(owner.try_wait().unwrap().is_none());assert!(Instant::now()<end,"owned dialog remained open");thread::sleep(Duration::from_millis(20));}}
+struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsafe{DestroyWindow(self.0);}}}
+#[test]fn actual_inventory_preview_keep_and_paired_read(){
+ let class:Vec<u16>="STATIC\0".encode_utf16().collect();let label:Vec<u16>="computer-link-synthetic-inventory-marker\0".encode_utf16().collect();let fixture=SyntheticWindow(unsafe{CreateWindowExW(0,class.as_ptr(),label.as_ptr(),0x10000000,0,0,100,50,ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())});assert!(!fixture.0.is_null());
+ let mut owner=Guard(Command::new(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ // Deny capture, then discard a locally captured preview. Neither creates a grant.
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");post(unsafe{GetDlgItem(d,7)},0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ for keep in [false,true]{
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);
+ let end=Instant::now()+Duration::from_secs(5);let preview=loop{let d=window(owner.0.id(),"#32770");if !d.is_null()&&title(d)=="Review captured window inventory"{break d}assert!(Instant::now()<end,"inventory preview not observed");thread::sleep(Duration::from_millis(20));};let body=dialog_body(preview,owner.0.id());assert!(body.contains("computer-link-synthetic-inventory-marker"),"synthetic visible window absent");let n:usize=body.split("Keep this ").nth(1).unwrap().split("-byte").next().unwrap().parse().unwrap();assert!(n>1&&n<=4096);post(unsafe{GetDlgItem(preview,if keep{6}else{7})},0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ if !keep{continue}
+ post(h,0x111,3,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Explicit local permission");assert!(dialog_body(d,owner.0.id()).contains("captured window inventory"));post(unsafe{GetDlgItem(d,6)},0xf5,0,0);wait_title(&mut owner.0,h,"one local grant");let name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ let expected=body.split_once("\n\n").expect("preview payload separator").1.as_bytes().to_vec();assert_eq!(expected.len(),n);let owner_pid=owner.0.id();
+ // This test executable is a separate client process from the owner. Keep actual
+ // bytes only in memory and never print captured desktop titles on mismatch.
+ let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ }
+ post(h,0x111,5,0);finish_client(&mut owner.0,true);
+}
