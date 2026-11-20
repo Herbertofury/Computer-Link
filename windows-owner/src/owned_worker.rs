@@ -170,7 +170,13 @@ fn quote(s:&std::ffi::OsStr)->io::Result<Vec<u16>> {
   let handle=value.trim().parse::<usize>().unwrap() as H;
   let mut name=String::new();std::io::stdin().read_line(&mut name).unwrap();
   unsafe extern "system"{fn OpenEventW(access:u32,inherit:i32,name:*const u16)->H;fn GetCurrentProcess()->H;fn DuplicateHandle(source:H,handle:H,target:H,result:*mut H,access:u32,inherit:i32,options:u32)->i32;}
-  #[link(name="kernelbase")] unsafe extern "system"{fn CompareObjectHandles(first:H,second:H)->i32;}
+  unsafe extern "system"{fn GetModuleHandleW(name:*const u16)->H;fn GetProcAddress(module:H,name:*const u8)->*mut c_void;}
+  // The documented export exists on supported Windows, but SDKs need not ship
+  // kernelbase.lib. Resolve only this already-loaded system module; no loading.
+  let module_name=wide(std::ffi::OsStr::new("kernelbase.dll")).unwrap();
+  let module=unsafe{GetModuleHandleW(module_name.as_ptr())};assert!(!module.is_null());
+  let address=unsafe{GetProcAddress(module,b"CompareObjectHandles\0".as_ptr())};assert!(!address.is_null());
+  let compare:unsafe extern "system" fn(H,H)->i32=unsafe{mem::transmute(address)};
   let mut observed=ptr::null_mut();
   let me=unsafe{GetCurrentProcess()};
   if unsafe{DuplicateHandle(me,handle,me,&mut observed,0,0,2)}==0 {
@@ -180,7 +186,7 @@ fn quote(s:&std::ffi::OsStr)->io::Result<Vec<u16>> {
   let name=wide(std::ffi::OsStr::new(name.trim())).unwrap();
   let known=Handle(unsafe{OpenEventW(0x100000,0,name.as_ptr())});assert!(!known.0.is_null());
   // Compare identity, not numeric validity: startup may recycle the old number.
-  assert_eq!(unsafe{CompareObjectHandles(observed.0,known.0)},0,"unrelated inheritable event leaked");
+  assert_eq!(unsafe{compare(observed.0,known.0)},0,"unrelated inheritable event leaked");
  }
  #[test] #[ignore] fn branch_fixture(){
   let mut child=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","owned_worker::tests::sleep_fixture","--ignored"]).spawn().unwrap();
