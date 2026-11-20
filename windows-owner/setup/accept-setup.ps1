@@ -45,6 +45,14 @@ if ((Run-Owned $setup $arguments) -ne 0) { throw 'Disposable setup failed' }
 foreach ($name in $binaries) {
   if ((Get-FileHash -LiteralPath (Join-Path $stage $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $destination $name)).Hash) { throw 'Installed bytes differ from tested binaries' }
 }
+# Snapshot the disposable installed tree. GUI operations must not add logs, state,
+# configuration, autostart entries or helper binaries inside this portable payload.
+function Installed-Manifest {
+  return @(Get-ChildItem -LiteralPath $destination -Recurse -File | Sort-Object FullName | ForEach-Object {
+    $_.FullName.Substring($destination.Length) + ':' + (Get-FileHash -LiteralPath $_.FullName).Hash
+  })
+}
+$installedBefore = Installed-Manifest
 # Re-run the real GUI workflows against installed bytes, with installed-folder CWD.
 # Test-only routing fails closed if an installed executable is missing; never falls back.
 $previousTestDirectory = $env:COMPUTER_LINK_TEST_INSTALLED_DIR
@@ -57,6 +65,10 @@ try {
 } finally {
   $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $previousTestDirectory
 }
+$installedAfter = Installed-Manifest
+if (@(Compare-Object $installedBefore $installedAfter).Count -ne 0) { throw 'Installed acceptance wrote or changed payload state' }
+# No persistence assertions are made about all Windows state: this checks the
+# installed folder, source-reviewed no service/autostart recipe, and owned processes.
 Write-Output 'Installed executable GUI, pairing, selection, create-new export, MCP snapshot/status, cancellation and Exit acceptance passed.'
 # Verify the workflows did not alter any installed program.
 foreach ($name in $binaries) {

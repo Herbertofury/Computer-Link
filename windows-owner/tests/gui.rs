@@ -153,3 +153,44 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  wait_title(&mut owner.0,h,"disconnected");
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
+
+#[link(name="user32")]unsafe extern "system"{
+ fn AllowSetForegroundWindow(pid:u32)->i32;
+ fn GetForegroundWindow()->H;
+ fn SetForegroundWindow(h:H)->i32;
+ fn PeekMessageW(msg:*mut FocusMsg,h:H,min:u32,max:u32,remove:u32)->i32;
+ fn TranslateMessage(msg:*const FocusMsg)->i32;fn DispatchMessageW(msg:*const FocusMsg)->isize;
+}
+#[repr(C)]struct FocusMsg{hwnd:H,msg:u32,w:usize,l:isize,time:u32,x:i32,y:i32,private:u32}
+fn pump_until(condition:impl Fn()->bool){let end=Instant::now()+Duration::from_secs(10);loop{let mut msg:FocusMsg=unsafe{std::mem::zeroed()};while unsafe{PeekMessageW(&mut msg,ptr::null_mut(),0,0,1)}!=0{unsafe{TranslateMessage(&msg);DispatchMessageW(&msg);}}if condition(){return}assert!(Instant::now()<end,"foreground fixture condition timed out");thread::sleep(Duration::from_millis(5));}}
+fn focus_pid(owner:&mut Child,h:H)->u32{wait_title(owner,h,"local foreground selector active | PID ");title(h).split("PID ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap()}
+fn foreign_ready(pid:u32,class:&'static str,id:i32)->(H,H){let mut found=(ptr::null_mut(),ptr::null_mut());let end=Instant::now()+Duration::from_secs(10);loop{let h=window(pid,class);if !h.is_null(){let b=unsafe{GetDlgItem(h,id)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{found=(h,b);break}}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(10));}found}
+#[test]fn actual_tray_owned_foreground_success_cancel_disconnect_exit(){
+ for mode in ["success","cancel","disconnect","exit"]{
+ let n=ptr::null_mut();let class:Vec<u16>="STATIC\0".encode_utf16().collect();let caption:Vec<u16>="Disposable installed foreground exact fixture\0".encode_utf16().collect();
+ let target=SyntheticWindow(unsafe{CreateWindowExW(0,class.as_ptr(),caption.as_ptr(),0x10000000,20,20,200,100,n,n,n,n)});assert!(!target.0.is_null());
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ assert_ne!(unsafe{SetForegroundWindow(h)},0);pump_until(||unsafe{GetForegroundWindow()}==h);
+ post(h,0x111,13,0);let consent=wait_window(&mut owner.0,"#32770");click_dialog_button(&mut owner.0,consent,6);
+ let pid=focus_pid(&mut owner.0,h);let process=FocusProcess(unsafe{OpenProcess(0x00100000,0,pid)});assert!(!process.0.is_null());let(_,allow)=foreign_ready(pid,"#32770",1);post(allow,0xf5,0,0);
+ let(selector,_)=foreign_ready(pid,"ComputerLinkLocalFocusSelector",3);let list=unsafe{GetDlgItem(selector,10)};let mut row=0;
+ assert_ne!(unsafe{SendMessageTimeoutW(list,0x18f,usize::MAX,caption.as_ptr() as isize,2,2000,&mut row)},0);assert_ne!(row,usize::MAX);
+ let mut ignored=0;assert_ne!(unsafe{SendMessageTimeoutW(list,0x186,row,0,2,2000,&mut ignored)},0);post(selector,0x111,3,0);
+ let(confirm,cancel)=foreign_ready(pid,"#32770",2);assert!(dialog_body(confirm,pid).contains("Disposable installed foreground exact fixture"));
+ match mode{
+ "success"=>{assert_ne!(unsafe{AllowSetForegroundWindow(pid)},0);let(_,yes)=foreign_ready(pid,"#32770",1);post(yes,0xf5,0,0);pump_until(||unsafe{GetForegroundWindow()}==target.0);},
+ "cancel"=>{post(cancel,0xf5,0,0);},
+ "disconnect"=>{post(h,0x111,4,0);},
+ _=>{post(h,0x111,5,0);finish_client(&mut owner.0,true);}}
+ pump_until(||unsafe{WaitForSingleObject(process.0,0)}==0);
+ pump_until(||window(pid,"#32770").is_null()&&window(pid,"ComputerLinkLocalFocusSelector").is_null());
+ // Closing the owner can legitimately cause Windows to activate another window.
+ // Check cancellation while owner is alive only; exact zero effect calls are
+ // asserted separately by window_focus::tests at the effect boundary.
+ if mode=="cancel"{assert_ne!(unsafe{GetForegroundWindow()},target.0,"cancelled fixture should not be foreground while owner remains");}
+ if mode!="exit"{wait_title(&mut owner.0,h,"disconnected");post(h,0x111,5,0);finish_client(&mut owner.0,true);}
+ }
+}
+
+#[link(name="kernel32")]unsafe extern "system"{fn OpenProcess(access:u32,inherit:i32,pid:u32)->H;fn WaitForSingleObject(h:H,ms:u32)->u32;fn CloseHandle(h:H)->i32;}
+struct FocusProcess(H);impl Drop for FocusProcess{fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
