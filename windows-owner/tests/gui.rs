@@ -106,3 +106,32 @@ struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsaf
  }
  post(h,0x111,5,0);finish_client(&mut owner.0,true);
 }
+
+#[test]fn actual_disconnect_invalidates_initial_permission(){
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());
+ let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
+ post(h,0x111,2,0);let dialog=wait_window(&mut owner.0,"#32770");
+ assert_eq!(title(dialog),"Explicit local permission");
+ let end=Instant::now()+Duration::from_secs(5);
+ let yes=loop{let b=unsafe{GetDlgItem(dialog,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end,"permission button not ready");thread::sleep(Duration::from_millis(20));};
+ // Synchronous dispatch proves Disconnect was processed before stale approval.
+ let mut result=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0x111,4,0,2,3000,&mut result)},0);
+ assert!(title(h).contains("disconnected"));
+ post(yes,0xf5,0,0);wait_no_dialog(&mut owner.0);
+ // Check owner responsiveness; sent messages alone do not flush posted work.
+ assert_ne!(unsafe{SendMessageTimeoutW(h,0,0,0,2,3000,&mut result)},0);
+ assert!(title(h).contains("disconnected"),"stale initial consent recreated a grant after Disconnect");
+ // A fresh deliberate approval remains usable after rejecting the stale one.
+ post(h,0x111,2,0);let fresh=wait_window(&mut owner.0,"#32770");
+ assert_eq!(title(fresh),"Explicit local permission");
+ let end=Instant::now()+Duration::from_secs(5);let yes=loop{let b=unsafe{GetDlgItem(fresh,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(20));};
+ post(yes,0xf5,0,0);wait_no_dialog(&mut owner.0);wait_title(&mut owner.0,h,"one local grant");
+ let name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ let mut client=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&name,"status"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap());
+ let prompt=wait_window(&mut owner.0,"#32770");assert_eq!(title(prompt),"Authorize connected client");
+ let end=Instant::now()+Duration::from_secs(5);let yes=loop{let b=unsafe{GetDlgItem(prompt,6)};if !b.is_null()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}assert!(Instant::now()<end);thread::sleep(Duration::from_millis(20));};
+ post(yes,0xf5,0,0);finish_client(&mut client.0,true);
+ let mut out=String::new();use std::io::Read;client.0.stdout.take().unwrap().read_to_string(&mut out).unwrap();assert_eq!(out.trim(),"authenticated response: 1 bytes");
+ wait_title(&mut owner.0,h,"disconnected");
+ post(h,0x111,5,0);finish_client(&mut owner.0,true);
+}
