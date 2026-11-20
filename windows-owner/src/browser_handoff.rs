@@ -69,3 +69,53 @@ impl HttpsLink {
         assert!(link.open_if_current(true,2,2, |_|Err(io::Error::other("launcher unavailable"))).is_err());
     }
 }
+
+/// One synchronous OS handoff; no command interpreter or argument string.
+/// The injectable boundary is internal, not an environment-controlled runtime hook.
+fn shell_handoff<F>(url: &str, invoke: F) -> io::Result<()>
+where F: FnOnce(&[u16], &[u16]) -> isize {
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    if invoke(&verb, &target) <= 32 {
+        Err(io::Error::other("Windows did not accept browser handoff"))
+    } else { Ok(()) }
+}
+#[cfg(windows)]
+pub fn open_default_browser(owner: isize, link: &HttpsLink) -> io::Result<()> {
+    use std::{ffi::c_void, ptr};
+    #[link(name="shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(h: *mut c_void, verb: *const u16, file: *const u16,
+            args: *const u16, dir: *const u16, show: i32) -> *mut c_void;
+    }
+    shell_handoff(link.url(), |verb, target| unsafe {
+        ShellExecuteW(owner as *mut c_void, verb.as_ptr(), target.as_ptr(),
+            ptr::null(), ptr::null(), 1) as isize
+    })
+}
+#[cfg(test)] mod shell_tests {
+    use super::*;
+    #[test] fn approved_handoff_preserves_exact_target_and_os_result() {
+        let url = format!("https://example.com/{}?q=one%2Ftwo#end", "x".repeat(1900));
+        let link = HttpsLink::parse(url.as_bytes()).unwrap();
+        let mut calls=0;
+        assert!(link.open_if_current(true, 4, 4, |selected| shell_handoff(selected, |verb, target| {
+            calls+=1;
+            assert_eq!(verb, &[111,112,101,110,0]);
+            assert_eq!(target.last(),Some(&0));
+            assert_eq!(String::from_utf16(&target[..target.len()-1]).unwrap(), url);
+            33
+        })).unwrap());
+        assert_eq!(calls,1);
+        for code in [0,2,5,8,26,27,28,29,30,31,32] {
+            assert!(shell_handoff(link.url(), |_,_|code).is_err());
+        }
+        assert!(shell_handoff(link.url(), |_,_|34).is_ok());
+    }
+    #[test] fn denied_or_stale_approval_never_reaches_os_boundary() {
+        let link=HttpsLink::parse(b"https://example.com/").unwrap();
+        for (yes,generation,current) in [(false,1,1),(true,1,2)] {
+            assert!(!link.open_if_current(yes,generation,current, |url| shell_handoff(url, |_,_|panic!("OS invoked"))).unwrap());
+        }
+    }
+}

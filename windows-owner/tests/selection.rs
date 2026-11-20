@@ -61,11 +61,12 @@ fn dismiss_notice(pid:u32,dialog:H){
  post(dialog,0x111,id as usize,button as isize);
 }
 struct Guard(Child);impl Drop for Guard{fn drop(&mut self){if self.0.try_wait().ok().flatten().is_none(){let _=self.0.kill();let _=self.0.wait();}}}
-#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){ file_dialog_case(false,false); }
-#[test]fn disconnected_file_dialog_cannot_capture_stale_selection(){ file_dialog_case(true,false); }
-#[test]fn selected_link_requires_explicit_browser_confirmation(){ file_dialog_case(false,true); }
-fn file_dialog_case(disconnect_while_open:bool,browser_link:bool){
- let dir=std::env::temp_dir().join(format!("owner-dialog-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let path=dir.join("fixture.txt");let fixture:&[u8]=if browser_link {b"https://example.com/approved-path?query=value"} else {b"native dialog fixture"};std::fs::write(&path,fixture).unwrap();
+#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){ file_dialog_case(false,false,false); }
+#[test]fn disconnected_file_dialog_cannot_capture_stale_selection(){ file_dialog_case(true,false,false); }
+#[test]fn selected_link_requires_explicit_browser_confirmation(){ file_dialog_case(false,true,false); }
+#[test]fn maximum_link_prompt_retains_exact_target(){ file_dialog_case(false,true,true); }
+fn file_dialog_case(disconnect_while_open:bool,browser_link:bool,long_link:bool){
+ let dir=std::env::temp_dir().join(format!("owner-dialog-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let path=dir.join("fixture.txt");let long_url=format!("https://example.com/{}#end", "x".repeat(2048-23));let fixture:&[u8]=if long_link {long_url.as_bytes()} else if browser_link {b"https://example.com/approved-path?query=value"} else {b"native dialog fixture"};std::fs::write(&path,fixture).unwrap();
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"owner-window",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");
  post(h,0x111,1,0);until(pid,"choose-dialog",||!find(pid,"#32770").is_null());let dialog=find(pid,"#32770");let deadline=Instant::now()+Duration::from_secs(8);let field=loop{let f=field(dialog,pid);if !f.h.is_null(){let edit=editable(f.h,pid);if !edit.is_null(){break edit}}assert!(Instant::now()<deadline,"native filename control missing; class/id metadata only: {:?}",f.seen);thread::sleep(Duration::from_millis(20));};
  use std::os::windows::ffi::OsStrExt;let value:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();let mut result=0;unsafe{SetLastError(0);}let sent=unsafe{SendMessageTimeoutW(field,0xc,0,value.as_ptr() as isize,2,2000,&mut result)};let set_error=unsafe{GetLastError()};let mut observed=vec![0u16;32768];let mut length=0;unsafe{SetLastError(0);}let read=unsafe{SendMessageTimeoutW(field,0xd,observed.len(),observed.as_mut_ptr() as isize,2,2000,&mut length)};let read_error=unsafe{GetLastError()};let exact=length<observed.len()&&observed[..length]==value[..value.len()-1];
@@ -96,7 +97,7 @@ fn file_dialog_case(disconnect_while_open:bool,browser_link:bool){
   post(h,0x111,7,0);
   until(pid,"browser-confirmation",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Open HTTPS link locally"});
   let dialog=find(pid,"#32770");let body=content(dialog);
-  assert!(body.contains("https://example.com/approved-path?query=value"));
+  assert!(body.contains(std::str::from_utf8(fixture).unwrap()),"exact URL absent from dialog text");
   assert!(body.contains("Host: example.com"));assert!(body.contains("cookies"));assert!(body.contains("remains open"));
   until(pid,"browser-deny-ready",||{let no=unsafe{GetDlgItem(dialog,7)};!no.is_null()&&unsafe{IsWindowVisible(no)!=0&&IsWindowEnabled(no)!=0}});
   post(unsafe{GetDlgItem(dialog,7)},0xf5,0,0);
