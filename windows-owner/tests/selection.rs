@@ -147,7 +147,21 @@ fn open_export_preview(h:H,pid:u32,destination:&std::path::Path)->H{
  until(pid,"export-folder-picker",||{let d=find(pid,"#32770");!d.is_null()&&content(d).contains("trusted local NTFS folder")});let d=find(pid,"#32770");
  let mut edit=ptr::null_mut();until(pid,"export-folder-edit",||{edit=editable(d,pid);!edit.is_null()});
  set_edit(edit,destination.to_str().unwrap());post(d,0x111,1,0);
- until(pid,"export-scrollable-preview",||!find(pid,"ComputerLinkExportPreview").is_null());find(pid,"ComputerLinkExportPreview")
+ // EnumWindows can observe CreateWindowEx before show() has created its controls.
+ // Never cache a null GetDlgItem result as the expected keyboard-focus handle.
+ let mut preview=ptr::null_mut();let mut observed_unready=false;
+ until(pid,"export-scrollable-preview",||{
+  let p=find(pid,"ComputerLinkExportPreview");if p.is_null(){return false}
+  if unsafe{IsWindowVisible(p)}==0{observed_unready=true;return false}
+  for id in [100,1,2] {
+   let control=unsafe{GetDlgItem(p,id)};let mut owner_pid=0;
+   if control.is_null(){observed_unready=true;return false}unsafe{GetWindowThreadProcessId(control,&mut owner_pid);}
+   if owner_pid!=pid||unsafe{IsWindowVisible(control)}==0||unsafe{IsWindowEnabled(control)}==0{return false}
+  }
+  let cancel=unsafe{GetDlgItem(p,2)};
+  if keyboard_focus(p)!=cancel{return false}
+  preview=p;true
+ });eprintln!("synthetic preview readiness: observed_hidden_or_missing_controls={observed_unready}");preview
 }
 fn export_result(pid:u32,expected:&str){
  until(pid,"export-result",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains(expected)});
