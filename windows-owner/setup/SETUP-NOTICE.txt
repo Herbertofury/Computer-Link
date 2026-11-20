@@ -1,0 +1,22 @@
+COMPUTER-LINK LOCAL PREVIEW: EXPERIMENTAL, NOT A CONNECTED PRODUCT
+
+This setup only places the local Windows owner/client preview in a NEW folder.
+Setup requests no elevation (it does not demote an already elevated launch).
+No service, autostart, browser extension, firewall change,
+remote endpoint, account registration or PC-access grant is created. Launch is optional.
+It does not connect ChatGPT/dot or control browsers, chats, keyboard or mouse.
+
+The local GUI supports explicitly consented status and bounded captured text/window
+inventory sharing with a separately approved local process. Window titles can be
+private. Review them before Keep, then approve only the intended local client.
+File read remains enabled; its original file-dialog completion test still fails.
+Do not use important/private files in this experimental preview. No write/delete/admin
+capability is granted. Existing security/race/identity limitations remain unresolved.
+
+The installer refuses existing destination folders rather than upgrading/overwriting.
+An uninstaller lives inside the chosen folder; no Add/Remove Programs registry entry
+is added. Uninstall removes recorded installed paths, even if their bytes were later replaced.
+Only differently named unrelated files are expected to remain. The new-folder check
+is not atomic against hostile directory/reparse changes; use a trusted local folder.
+Exit/close stops the owner; unrelated browsers are not terminated. This is unsigned.
+Do not bypass operating-system security warnings. This is not production-ready.
