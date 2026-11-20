@@ -1,5 +1,6 @@
 #![cfg(windows)]
 pub mod window_inventory;
+pub mod browser_handoff;
 use std::{io,thread::{self,JoinHandle},time::{Duration,Instant},path::Path,fs::OpenOptions,os::windows::fs::{OpenOptionsExt,MetadataExt},io::Read};
 use computer_link_local_transport::{Server,Stop,PeerInfo};
 #[path="../../windows-workspace/src/root_scope.rs"] mod root_scope;

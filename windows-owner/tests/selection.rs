@@ -61,10 +61,11 @@ fn dismiss_notice(pid:u32,dialog:H){
  post(dialog,0x111,id as usize,button as isize);
 }
 struct Guard(Child);impl Drop for Guard{fn drop(&mut self){if self.0.try_wait().ok().flatten().is_none(){let _=self.0.kill();let _=self.0.wait();}}}
-#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){ file_dialog_case(false); }
-#[test]fn disconnected_file_dialog_cannot_capture_stale_selection(){ file_dialog_case(true); }
-fn file_dialog_case(disconnect_while_open:bool){
- let dir=std::env::temp_dir().join(format!("owner-dialog-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let path=dir.join("fixture.txt");std::fs::write(&path,b"native dialog fixture").unwrap();
+#[test]fn actual_file_dialog_selection_and_cancel_preserve_fixture(){ file_dialog_case(false,false); }
+#[test]fn disconnected_file_dialog_cannot_capture_stale_selection(){ file_dialog_case(true,false); }
+#[test]fn selected_link_requires_explicit_browser_confirmation(){ file_dialog_case(false,true); }
+fn file_dialog_case(disconnect_while_open:bool,browser_link:bool){
+ let dir=std::env::temp_dir().join(format!("owner-dialog-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let path=dir.join("fixture.txt");let fixture:&[u8]=if browser_link {b"https://example.com/approved-path?query=value"} else {b"native dialog fixture"};std::fs::write(&path,fixture).unwrap();
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"owner-window",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");
  post(h,0x111,1,0);until(pid,"choose-dialog",||!find(pid,"#32770").is_null());let dialog=find(pid,"#32770");let deadline=Instant::now()+Duration::from_secs(8);let field=loop{let f=field(dialog,pid);if !f.h.is_null(){let edit=editable(f.h,pid);if !edit.is_null(){break edit}}assert!(Instant::now()<deadline,"native filename control missing; class/id metadata only: {:?}",f.seen);thread::sleep(Duration::from_millis(20));};
  use std::os::windows::ffi::OsStrExt;let value:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();let mut result=0;unsafe{SetLastError(0);}let sent=unsafe{SendMessageTimeoutW(field,0xc,0,value.as_ptr() as isize,2,2000,&mut result)};let set_error=unsafe{GetLastError()};let mut observed=vec![0u16;32768];let mut length=0;unsafe{SetLastError(0);}let read=unsafe{SendMessageTimeoutW(field,0xd,observed.len(),observed.as_mut_ptr() as isize,2,2000,&mut length)};let read_error=unsafe{GetLastError()};let exact=length<observed.len()&&observed[..length]==value[..value.len()-1];
@@ -88,12 +89,23 @@ fn file_dialog_case(disconnect_while_open:bool){
   assert!(text(h).contains("disconnected"));
   post(h,0x111,5,0);until(pid,"stale-owner-exited",||owner.0.try_wait().unwrap().is_some());
   assert!(owner.0.try_wait().unwrap().unwrap().success());
-  assert_eq!(std::fs::read(&path).unwrap(),b"native dialog fixture");std::fs::remove_dir_all(dir).unwrap();return;
+  assert_eq!(std::fs::read(&path).unwrap(),fixture);std::fs::remove_dir_all(dir).unwrap();return;
  }
- until(pid,"selected-notice",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains("Nothing shared yet")});let notice=find(pid,"#32770");assert!(content(notice).contains("21 bytes"));dismiss_notice(pid,notice);until(pid,"selected-notice-dismissed",||find(pid,"#32770").is_null());
+ until(pid,"selected-notice",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains("Nothing shared yet")});let notice=find(pid,"#32770");assert!(content(notice).contains(&format!("{} bytes",fixture.len())));dismiss_notice(pid,notice);until(pid,"selected-notice-dismissed",||find(pid,"#32770").is_null());
+ if browser_link {
+  post(h,0x111,7,0);
+  until(pid,"browser-confirmation",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Open HTTPS link locally"});
+  let dialog=find(pid,"#32770");let body=content(dialog);
+  assert!(body.contains("https://example.com/approved-path?query=value"));
+  assert!(body.contains("Host: example.com"));assert!(body.contains("cookies"));assert!(body.contains("remains open"));
+  until(pid,"browser-deny-ready",||{let no=unsafe{GetDlgItem(dialog,7)};!no.is_null()&&unsafe{IsWindowVisible(no)!=0&&IsWindowEnabled(no)!=0}});
+  post(unsafe{GetDlgItem(dialog,7)},0xf5,0,0);
+  until(pid,"browser-denied",||find(pid,"#32770").is_null());
+  assert!(text(h).contains("disconnected"));
+ }
  // Selecting alone never opens a grant; an explicit read confirmation remains necessary.
  assert!(text(h).contains("disconnected"));post(h,0x111,3,0);until(pid,"read-permission",||!find(pid,"#32770").is_null());let permission=find(pid,"#32770");assert!(content(permission).contains("fixture.txt"));post(unsafe{GetDlgItem(permission,7)},0xf5,0,0);until(pid,"read-permission-dismissed",||find(pid,"#32770").is_null());assert!(text(h).contains("disconnected"));
  // Cancel a new selection; the prior choice must not silently remain selectable.
  post(h,0x111,1,0);until(pid,"reselection-dialog",||!find(pid,"#32770").is_null());post(find(pid,"#32770"),0x111,2,0);until(pid,"reselection-cancelled",||find(pid,"#32770").is_null());post(h,0x111,3,0);until(pid,"missing-selection-notice",||!find(pid,"#32770").is_null());let refusal=find(pid,"#32770");assert!(content(refusal).contains("Choose a bounded UTF-8 file first"));dismiss_notice(pid,refusal);until(pid,"missing-selection-dismissed",||find(pid,"#32770").is_null());
- post(h,0x111,5,0);until(pid,"owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());assert_eq!(std::fs::read(&path).unwrap(),b"native dialog fixture");std::fs::remove_dir_all(dir).unwrap();
+ post(h,0x111,5,0);until(pid,"owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());assert_eq!(std::fs::read(&path).unwrap(),fixture);std::fs::remove_dir_all(dir).unwrap();
 }
