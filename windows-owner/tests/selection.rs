@@ -110,3 +110,17 @@ fn file_dialog_case(disconnect_while_open:bool,browser_link:bool,long_link:bool)
  post(h,0x111,1,0);until(pid,"reselection-dialog",||!find(pid,"#32770").is_null());post(find(pid,"#32770"),0x111,2,0);until(pid,"reselection-cancelled",||find(pid,"#32770").is_null());post(h,0x111,3,0);until(pid,"missing-selection-notice",||!find(pid,"#32770").is_null());let refusal=find(pid,"#32770");assert!(content(refusal).contains("Choose a bounded UTF-8 file first"));dismiss_notice(pid,refusal);until(pid,"missing-selection-dismissed",||find(pid,"#32770").is_null());
  post(h,0x111,5,0);until(pid,"owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());assert_eq!(std::fs::read(&path).unwrap(),fixture);std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]fn folder_picker_cancel_creates_no_capture_or_grant(){
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();
+ until(pid,"folder-owner-window",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");
+ post(h,0x111,8,0);until(pid,"folder-picker",||{let d=find(pid,"#32770");!d.is_null()&&content(d).contains("Select ONE local folder")});let dialog=find(pid,"#32770");
+ assert!(content(dialog).contains("Select ONE local folder"));
+ until(pid,"folder-cancel-ready",||{let cancel=unsafe{GetDlgItem(dialog,2)};!cancel.is_null()&&unsafe{IsWindowVisible(cancel)!=0&&IsWindowEnabled(cancel)!=0}});
+ post(unsafe{GetDlgItem(dialog,2)},0xf5,0,0);until(pid,"folder-picker-cancelled",||find(pid,"#32770").is_null());
+ assert!(text(h).contains("disconnected"));
+ post(h,0x111,3,0);until(pid,"folder-cancel-no-capture",||!find(pid,"#32770").is_null());let refusal=find(pid,"#32770");
+ assert!(content(refusal).contains("Choose a bounded UTF-8 file first"));dismiss_notice(pid,refusal);
+ until(pid,"folder-refusal-dismissed",||find(pid,"#32770").is_null());post(h,0x111,5,0);
+ until(pid,"folder-owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());
+}
