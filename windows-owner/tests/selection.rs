@@ -197,11 +197,19 @@ fn fixture_long_path(path:&std::path::Path)->std::path::PathBuf {
  let p=open_export_preview(h,pid,&dest);let e=unsafe{GetDlgItem(p,100)};assert!(!e.is_null());let display=read_edit(e);assert!(display.contains(&format!("{fixture:?}")));let expected=fixture_long_path(&dest);assert_eq!(display.lines().next(),Some(format!("Selected local folder: {expected:?}").as_str()),"exact expanded synthetic destination required");assert!(display.contains("computer-link-export.txt"));assert!(display.contains("No overwrite"));assert_ne!(unsafe{GetWindowLongPtrW(e,-16)}&0x800,0,"preview must be read-only");
  let no=unsafe{GetDlgItem(p,2)};until(pid,"export-default-cancel-focus",||keyboard_focus(p)==no);
  post(no,0x100,0x0d,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ // Enter and Escape from the readonly text itself must also deny, never create.
+ for key in [13usize,27] {
+  let p=open_export_preview(h,pid,&dest);let no=unsafe{GetDlgItem(p,2)};let edit=unsafe{GetDlgItem(p,100)};
+  until(pid,"export-text-default",||keyboard_focus(p)==no);post(no,0x100,9,0);
+  until(pid,"export-text-focus",||keyboard_focus(p)==edit);post(edit,0x100,key,0);
+  export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ }
  // Tab traversal remains usable, but Escape always denies even with Create focused.
  let p=open_export_preview(h,pid,&dest);let no=unsafe{GetDlgItem(p,2)};let edit=unsafe{GetDlgItem(p,100)};let yes=unsafe{GetDlgItem(p,1)};
  until(pid,"export-second-default",||keyboard_focus(p)==no);post(no,0x100,9,0);until(pid,"export-tab-edit",||keyboard_focus(p)==edit);
  // Bounded control metadata only; no preview/owner data is logged.
  let mut dlgcode=0;assert_ne!(unsafe{SendMessageTimeoutW(edit,0x87,9,0,2,2000,&mut dlgcode)},0);
+ assert_eq!(dlgcode&6,0,"preview must yield Tab to dialog navigation");
  eprintln!("synthetic tab-before: focus_id={}, edit_dlgcode={dlgcode:#x}, create_enabled={}, create_visible={}",
    unsafe{GetDlgCtrlID(keyboard_focus(p))},unsafe{IsWindowEnabled(yes)},unsafe{IsWindowVisible(yes)});
  post(edit,0x100,9,0);thread::sleep(Duration::from_millis(150));

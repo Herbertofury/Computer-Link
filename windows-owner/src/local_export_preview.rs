@@ -14,6 +14,20 @@ type H=*mut c_void;
  fn EnableWindow(h:H,enabled:i32)->i32;fn SetFocus(h:H)->H;
 }
 #[link(name="kernel32")]unsafe extern "system"{fn GetModuleHandleW(n:*const u16)->H;}
+type Subclass=Option<unsafe extern "system" fn(H,u32,usize,isize,usize,usize)->isize>;
+#[link(name="comctl32")]unsafe extern "system" {
+ fn SetWindowSubclass(h:H,procedure:Subclass,id:usize,data:usize)->i32;
+ fn RemoveWindowSubclass(h:H,procedure:Subclass,id:usize)->i32;
+ fn DefSubclassProc(h:H,m:u32,w:usize,l:isize)->isize;
+}
+// A standard multiline EDIT requests all keys (native diagnostic: 0x8d).
+// This read-only preview must instead let IsDialogMessage route Tab/Enter/Escape.
+// Preserve all text-selection/copy/scroll behavior for other keys.
+unsafe extern "system" fn preview_edit(h:H,m:u32,w:usize,l:isize,id:usize,_data:usize)->isize {
+ if m==0x82 {unsafe{RemoveWindowSubclass(h,Some(preview_edit),id);}}
+ let result=unsafe{DefSubclassProc(h,m,w,l)};
+ if m==0x87&&matches!(w,9|13|27){result&!(0x4|0x2)}else{result}
+}
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 struct Data{edit:H,yes:H,no:H,alive:Rc<Cell<bool>>,answer:Option<Box<dyn FnOnce(bool)>>}
 pub struct Window{h:H,alive:Rc<Cell<bool>>}
@@ -49,6 +63,9 @@ pub fn show(owner:isize,text:&str,answer:impl FnOnce(bool)+'static)->io::Result<
  let yes=unsafe{CreateWindowExW(0,wide("BUTTON").as_ptr(),wide("Create this new file").as_ptr(),0x50010000,12,530,170,32,h,1usize as H,instance,ptr::null_mut())};
  let no=unsafe{CreateWindowExW(0,wide("BUTTON").as_ptr(),wide("Cancel").as_ptr(),0x50010001,194,530,120,32,h,2usize as H,instance,ptr::null_mut())};
  if edit.is_null()||yes.is_null()||no.is_null(){unsafe{DestroyWindow(h);}return Err(io::Error::other("preview controls unavailable"))}
+ if unsafe{SetWindowSubclass(edit,Some(preview_edit),1,0)}==0 {
+  unsafe{DestroyWindow(h);}return Err(io::Error::other("preview keyboard routing unavailable"))
+ }
  // Create remains disabled until the entire normalized display is verified.
  unsafe{EnableWindow(yes,0);SendMessageW(edit,0xc5,32760,0);}
  let set=unsafe{SendMessageW(edit,0xc,0,wide(&displayed).as_ptr() as isize)};
