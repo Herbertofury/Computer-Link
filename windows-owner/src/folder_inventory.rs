@@ -65,6 +65,10 @@ pub fn capture(path: &std::path::Path) -> io::Result<Vec<u8>> {
 /// No path from a remote client is accepted. MAX_PATH conversion failure is a refusal.
 #[cfg(windows)]
 pub fn choose(owner: isize) -> io::Result<Option<std::path::PathBuf>> {
+    choose_titled(owner,"Select ONE local folder for a names/types inventory; no child contents.")
+}
+#[cfg(windows)]
+pub(crate) fn choose_titled(owner: isize, label:&str) -> io::Result<Option<std::path::PathBuf>> {
     use std::{ffi::c_void, ptr, os::windows::ffi::OsStringExt};
     type H = *mut c_void;
     #[repr(C)] struct Browse { owner:H, root:H, display:*mut u16, title:*const u16, flags:u32,
@@ -78,7 +82,7 @@ pub fn choose(owner: isize) -> io::Result<Option<std::path::PathBuf>> {
     if unsafe { CoInitializeEx(ptr::null_mut(),2) } < 0 { return Err(io::Error::other("folder dialog initialization failed")); }
     struct Com; impl Drop for Com { fn drop(&mut self) { unsafe { CoUninitialize(); } } }
     let _com=Com;
-    let title:Vec<u16>="Select ONE local folder for a names/types inventory; no child contents.\0".encode_utf16().collect();
+    let title:Vec<u16>=label.encode_utf16().chain(Some(0)).collect();
     let mut display=[0u16;260];
     let mut info=Browse{owner:owner as H,root:ptr::null_mut(),display:display.as_mut_ptr(),title:title.as_ptr(),
         flags:0x1|0x10|0x40|0x200|0x400,callback:None,data:0,image:0};

@@ -1,5 +1,7 @@
 #![cfg(windows)]
 pub mod window_inventory;
+pub mod local_export_ui;
+pub mod local_export_preview;
 pub mod owned_worker;
 pub mod stdio_pipe;
 pub mod status_protocol;

@@ -6,3 +6,4 @@ edition = "2024"
 serde_json = "1"
 [target.'cfg(windows)'.dependencies]
 computer-link-local-transport = { path = "../windows-transport" }
+computer-link-local-export-candidate = { path = "../local-export" }

@@ -129,3 +129,60 @@ fn file_dialog_case(disconnect_while_open:bool,browser_link:bool,long_link:bool)
  until(pid,"folder-refusal-dismissed",||find(pid,"#32770").is_null());post(h,0x111,5,0);
  until(pid,"folder-owner-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());
 }
+
+#[repr(C)]struct GuiThreadInfo{size:u32,flags:u32,active:H,focus:H,capture:H,menu:H,moving:H,caret:H,rect:[i32;4]}
+#[link(name="user32")]unsafe extern "system"{fn GetGUIThreadInfo(thread:u32,info:*mut GuiThreadInfo)->i32;}
+fn keyboard_focus(h:H)->H{let tid=unsafe{GetWindowThreadProcessId(h,ptr::null_mut())};let mut info:GuiThreadInfo=unsafe{std::mem::zeroed()};info.size=std::mem::size_of::<GuiThreadInfo>() as u32;assert_ne!(unsafe{GetGUIThreadInfo(tid,&mut info)},0);info.focus}
+fn set_edit(h:H,value:&str){let v:Vec<u16>=value.encode_utf16().chain(Some(0)).collect();let mut r=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0xc,0,v.as_ptr() as isize,2,2000,&mut r)},0);assert_ne!(r,0);}
+fn read_edit(h:H)->String{let mut b=vec![0u16;32768];let mut n=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0xd,b.len(),b.as_mut_ptr() as isize,2,2000,&mut n)},0);assert!(n<b.len());String::from_utf16_lossy(&b[..n])}
+fn select_export_fixture(h:H,pid:u32,path:&std::path::Path){
+ post(h,0x111,1,0);until(pid,"export-source-dialog",||!find(pid,"#32770").is_null());let d=find(pid,"#32770");let mut edit=ptr::null_mut();
+ until(pid,"export-source-edit",||{let f=field(d,pid);if !f.h.is_null(){edit=editable(f.h,pid);}!edit.is_null()});
+ set_edit(edit,path.to_str().unwrap());post(d,0x111,1,0);
+ until(pid,"export-source-captured",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains("Nothing shared yet")});
+ dismiss_notice(pid,find(pid,"#32770"));until(pid,"export-source-notice-closed",||find(pid,"#32770").is_null());
+}
+fn open_export_preview(h:H,pid:u32,destination:&std::path::Path)->H{
+ post(h,0x111,12,0);
+ until(pid,"export-folder-picker",||{let d=find(pid,"#32770");!d.is_null()&&content(d).contains("trusted local NTFS folder")});let d=find(pid,"#32770");
+ let mut edit=ptr::null_mut();until(pid,"export-folder-edit",||{edit=editable(d,pid);!edit.is_null()});
+ set_edit(edit,destination.to_str().unwrap());post(d,0x111,1,0);
+ until(pid,"export-scrollable-preview",||!find(pid,"ComputerLinkExportPreview").is_null());find(pid,"ComputerLinkExportPreview")
+}
+fn export_result(pid:u32,expected:&str){
+ until(pid,"export-result",||{let d=find(pid,"#32770");!d.is_null()&&text(d)=="Computer-Link local proof"&&content(d).contains(expected)});
+ dismiss_notice(pid,find(pid,"#32770"));until(pid,"export-result-dismissed",||find(pid,"#32770").is_null());
+}
+fn click_export(pid:u32,p:H,id:i32){until(pid,"export-button-ready",||{let b=unsafe{GetDlgItem(p,id)};!b.is_null()&&unsafe{IsWindowEnabled(b)!=0&&IsWindowVisible(b)!=0}});post(unsafe{GetDlgItem(p,id)},0xf5,0,0);}
+#[test]fn local_export_exact_preview_deny_save_and_preserve_existing(){
+ let dir=std::env::temp_dir().join(format!("owner-export-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();
+ let dest=dir.join("destination");std::fs::create_dir(&dest).unwrap();let source=dir.join("source.txt");let fixture=format!("{}\nEND-EXACT-EXPORT", "x".repeat(4079));assert_eq!(fixture.len(),4096);std::fs::write(&source,&fixture).unwrap();
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"export-owner",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");select_export_fixture(h,pid,&source);
+ let p=open_export_preview(h,pid,&dest);let e=unsafe{GetDlgItem(p,100)};assert!(!e.is_null());let display=read_edit(e);assert!(display.contains(&format!("{fixture:?}")));assert!(display.contains(&format!("{dest:?}")));assert!(display.contains("computer-link-export.txt"));assert!(display.contains("No overwrite"));assert_ne!(unsafe{GetWindowLongPtrW(e,-16)}&0x800,0,"preview must be read-only");
+ let no=unsafe{GetDlgItem(p,2)};until(pid,"export-default-cancel-focus",||keyboard_focus(p)==no);
+ post(no,0x100,0x0d,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ // Tab traversal remains usable, but Escape always denies even with Create focused.
+ let p=open_export_preview(h,pid,&dest);let no=unsafe{GetDlgItem(p,2)};let edit=unsafe{GetDlgItem(p,100)};let yes=unsafe{GetDlgItem(p,1)};
+ until(pid,"export-second-default",||keyboard_focus(p)==no);post(no,0x100,9,0);until(pid,"export-tab-edit",||keyboard_focus(p)==edit);
+ post(edit,0x100,9,0);until(pid,"export-tab-create",||keyboard_focus(p)==yes);post(yes,0x100,0x1b,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ let p=open_export_preview(h,pid,&dest);click_export(pid,p,2);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ let p=open_export_preview(h,pid,&dest);click_export(pid,p,1);export_result(pid,"Created computer-link-export.txt");assert_eq!(std::fs::read_to_string(dest.join("computer-link-export.txt")).unwrap(),fixture);
+ let p=open_export_preview(h,pid,&dest);click_export(pid,p,1);export_result(pid,"Export not confirmed");assert_eq!(std::fs::read_to_string(dest.join("computer-link-export.txt")).unwrap(),fixture);assert!(dest.join("computer-link-export.txt.pending").exists());
+ post(h,0x111,5,0);until(pid,"export-owner-exit",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());assert_eq!(std::fs::read_to_string(&source).unwrap(),fixture);std::fs::remove_dir_all(dir).unwrap();
+}
+struct Named{pid:u32,title:&'static str,h:H}
+unsafe extern "system" fn named_visit(h:H,data:isize)->i32{let n=unsafe{&mut*(data as *mut Named)};let mut p=0;unsafe{GetWindowThreadProcessId(h,&mut p);}if p==n.pid&&text(h)==n.title{n.h=h;return 0}1}
+fn named(pid:u32,title:&'static str)->H{let mut n=Named{pid,title,h:ptr::null_mut()};unsafe{EnumWindows(Some(named_visit),&mut n as *mut _ as isize);}n.h}
+#[test]fn local_export_disconnect_fences_preview_and_exit_ends_picker(){
+ let dir=std::env::temp_dir().join(format!("owner-export-cancel-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&dir).unwrap();let source=dir.join("source.txt");std::fs::write(&source,"cancelled fixture").unwrap();let dest=dir.join("destination");std::fs::create_dir(&dest).unwrap();
+ let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let pid=owner.0.id();until(pid,"export-cancel-owner",||!find(pid,"ComputerLinkOwnerProof").is_null());let h=find(pid,"ComputerLinkOwnerProof");select_export_fixture(h,pid,&source);
+ let _preview=open_export_preview(h,pid,&dest);
+ for m in [0x8007,0x8008]{let mut r=0;assert_ne!(unsafe{SendMessageTimeoutW(h,m,1,1,2,1000,&mut r)},0);}
+ assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ post(h,0x111,4,0);until(pid,"export-revoked-preview",||find(pid,"ComputerLinkExportPreview").is_null());export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ post(h,0x111,12,0);until(pid,"export-exit-picker",||{let d=find(pid,"#32770");!d.is_null()&&content(d).contains("trusted local NTFS folder")});
+ let mut r=0;assert_ne!(unsafe{SendMessageTimeoutW(h,0,0,0,2,1000,&mut r)},0,"folder picker must not block main UI");
+ post(h,0x111,5,0);until(pid,"export-exit-warning",||!named(pid,"Exit during local export").is_null());let d=named(pid,"Exit during local export");assert!(content(d).contains("outcome")||content(d).contains("may already exist"));
+ until(pid,"export-exit-yes",||{let b=unsafe{GetDlgItem(d,6)};!b.is_null()&&unsafe{IsWindowEnabled(b)!=0&&IsWindowVisible(b)!=0}});post(unsafe{GetDlgItem(d,6)},0xf5,0,0);
+ until(pid,"export-picker-process-exited",||owner.0.try_wait().unwrap().is_some());assert!(owner.0.try_wait().unwrap().unwrap().success());assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);std::fs::remove_dir_all(dir).unwrap();
+}
