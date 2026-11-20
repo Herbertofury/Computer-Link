@@ -200,7 +200,13 @@ fn fixture_long_path(path:&std::path::Path)->std::path::PathBuf {
  // Tab traversal remains usable, but Escape always denies even with Create focused.
  let p=open_export_preview(h,pid,&dest);let no=unsafe{GetDlgItem(p,2)};let edit=unsafe{GetDlgItem(p,100)};let yes=unsafe{GetDlgItem(p,1)};
  until(pid,"export-second-default",||keyboard_focus(p)==no);post(no,0x100,9,0);until(pid,"export-tab-edit",||keyboard_focus(p)==edit);
- post(edit,0x100,9,0);until(pid,"export-tab-create",||keyboard_focus(p)==yes);post(yes,0x100,0x1b,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+ // Bounded control metadata only; no preview/owner data is logged.
+ let mut dlgcode=0;assert_ne!(unsafe{SendMessageTimeoutW(edit,0x87,9,0,2,2000,&mut dlgcode)},0);
+ eprintln!("synthetic tab-before: focus_id={}, edit_dlgcode={dlgcode:#x}, create_enabled={}, create_visible={}",
+   unsafe{GetDlgCtrlID(keyboard_focus(p))},unsafe{IsWindowEnabled(yes)},unsafe{IsWindowVisible(yes)});
+ post(edit,0x100,9,0);thread::sleep(Duration::from_millis(150));
+ eprintln!("synthetic tab-after: focus_id={}",unsafe{GetDlgCtrlID(keyboard_focus(p))});
+ until(pid,"export-tab-create",||keyboard_focus(p)==yes);post(yes,0x100,0x1b,0);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
  let p=open_export_preview(h,pid,&dest);click_export(pid,p,2);export_result(pid,"cancelled");assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
  let p=open_export_preview(h,pid,&dest);click_export(pid,p,1);export_result(pid,"Created computer-link-export.txt");assert_eq!(std::fs::read_to_string(dest.join("computer-link-export.txt")).unwrap(),fixture);
  let p=open_export_preview(h,pid,&dest);click_export(pid,p,1);export_result(pid,"Export not confirmed");assert_eq!(std::fs::read_to_string(dest.join("computer-link-export.txt")).unwrap(),fixture);assert!(dest.join("computer-link-export.txt.pending").exists());
