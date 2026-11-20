@@ -62,6 +62,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Installed native GUI/selection/export acceptance failed' }
   & cargo +1.99.1 test --locked --manifest-path windows-owner/Cargo.toml --test probe_gui -- --ignored --test-threads=1 --nocapture
   if ($LASTEXITCODE -ne 0) { throw 'Installed native snapshot/status MCP acceptance failed' }
+  & cargo +1.99.1 test --locked --manifest-path mcp-session/Cargo.toml --test owner_interactive actual_partial_status_frame_disconnect_and_fresh_session -- --exact --test-threads=1 --nocapture
+  if ($LASTEXITCODE -ne 0) { throw 'Installed partial status frame revocation acceptance failed' }
 } finally {
   $env:COMPUTER_LINK_TEST_INSTALLED_DIR = $previousTestDirectory
 }
