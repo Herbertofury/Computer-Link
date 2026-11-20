@@ -81,27 +81,39 @@ struct Texts{pid:u32,text:String,failed:bool}
 unsafe extern "system" fn static_text(h:H,d:isize)->i32{let s=unsafe{&mut*(d as *mut Texts)};let mut pid=0;unsafe{GetWindowThreadProcessId(h,&mut pid);}let mut class=[0;32];let n=unsafe{GetClassNameW(h,class.as_mut_ptr(),32)};if pid!=s.pid||n<=0||String::from_utf16_lossy(&class[..n as usize])!="Static"{return 1}let mut b=[0;8192];let mut n=0;let ok=unsafe{SendMessageTimeoutW(h,0xd,b.len(),b.as_mut_ptr() as isize,2,2000,&mut n)};if ok==0||n>=b.len(){s.failed=true;return 0}s.text.push_str(&String::from_utf16_lossy(&b[..n]));1}
 fn dialog_body(h:H,pid:u32)->String{let mut s=Texts{pid,text:String::new(),failed:false};unsafe{EnumChildWindows(h,Some(static_text),&mut s as *mut _ as isize);}assert!(!s.failed,"bounded dialog text read failed");s.text}
 fn wait_no_dialog(owner:&mut Child){let end=Instant::now()+Duration::from_secs(5);while !window(owner.id(),"#32770").is_null(){assert!(owner.try_wait().unwrap().is_none());assert!(Instant::now()<end,"owned dialog remained open");thread::sleep(Duration::from_millis(20));}}
+// A dialog can be enumerated before its controls exist. PostMessageW(NULL,...)
+// succeeds by targeting the caller thread, silently losing a premature BM_CLICK.
+fn click_inventory_button(owner:&mut Child,dialog:H,id:i32){
+ let end=Instant::now()+Duration::from_secs(5);
+ let button=loop{
+  assert!(owner.try_wait().unwrap().is_none(),"inventory owner exited before button ready");
+  let b=unsafe{GetDlgItem(dialog,id)};let mut pid=0;
+  if !b.is_null(){unsafe{GetWindowThreadProcessId(b,&mut pid);}}
+  if !b.is_null()&&pid==owner.id()&&unsafe{IsWindowVisible(b)}!=0&&unsafe{IsWindowEnabled(b)}!=0{break b}
+  assert!(Instant::now()<end,"inventory button not ready");thread::sleep(Duration::from_millis(20));
+ };post(button,0xf5,0,0);
+}
 struct SyntheticWindow(H);impl Drop for SyntheticWindow{fn drop(&mut self){unsafe{DestroyWindow(self.0);}}}
 #[test]fn actual_inventory_preview_keep_and_paired_read(){
  let class:Vec<u16>="STATIC\0".encode_utf16().collect();let label:Vec<u16>="computer-link-synthetic-inventory-marker\0".encode_utf16().collect();let fixture=SyntheticWindow(unsafe{CreateWindowExW(0,class.as_ptr(),label.as_ptr(),0x10000000,0,0,100,50,ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())});assert!(!fixture.0.is_null());
  let mut owner=Guard(support::command(env!("CARGO_BIN_EXE_computer-link-owner-proof")).spawn().unwrap());let h=wait_window(&mut owner.0,"ComputerLinkOwnerProof");
  // Deny capture, then discard a locally captured preview. Neither creates a grant.
- post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");post(unsafe{GetDlgItem(d,7)},0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_inventory_button(&mut owner.0,d,7);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
  for keep in [false,true]{
- post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);
- let end=Instant::now()+Duration::from_secs(5);let preview=loop{let d=window(owner.0.id(),"#32770");if !d.is_null()&&title(d)=="Review captured window inventory"{break d}assert!(Instant::now()<end,"inventory preview not observed");thread::sleep(Duration::from_millis(20));};let body=dialog_body(preview,owner.0.id());assert!(body.contains("computer-link-synthetic-inventory-marker"),"synthetic visible window absent");let n:usize=body.split("Keep this ").nth(1).unwrap().split("-byte").next().unwrap().parse().unwrap();assert!(n>1&&n<=4096);post(unsafe{GetDlgItem(preview,if keep{6}else{7})},0xf5,0,0);wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
+ post(h,0x111,6,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Capture window inventory locally");click_inventory_button(&mut owner.0,d,6);
+ let end=Instant::now()+Duration::from_secs(5);let preview=loop{let d=window(owner.0.id(),"#32770");if !d.is_null()&&title(d)=="Review captured window inventory"{break d}assert!(Instant::now()<end,"inventory preview not observed");thread::sleep(Duration::from_millis(20));};let body=dialog_body(preview,owner.0.id());assert!(body.contains("computer-link-synthetic-inventory-marker"),"synthetic visible window absent");let n:usize=body.split("Keep this ").nth(1).unwrap().split("-byte").next().unwrap().parse().unwrap();assert!(n>1&&n<=4096);click_inventory_button(&mut owner.0,preview,if keep{6}else{7});wait_no_dialog(&mut owner.0);assert!(title(h).contains("disconnected"));
  if !keep{continue}
- post(h,0x111,3,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Explicit local permission");assert!(dialog_body(d,owner.0.id()).contains("captured window inventory"));post(unsafe{GetDlgItem(d,6)},0xf5,0,0);wait_title(&mut owner.0,h,"one local grant");let name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ post(h,0x111,3,0);let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Explicit local permission");assert!(dialog_body(d,owner.0.id()).contains("captured window inventory"));click_inventory_button(&mut owner.0,d,6);wait_title(&mut owner.0,h,"one local grant");let name=title(h).split(" | ").nth(1).unwrap().to_owned();
  let expected=body.split_once("\n\n").expect("preview payload separator").1.as_bytes().to_vec();assert_eq!(expected.len(),n);let owner_pid=owner.0.id();
  // This test executable is a separate client process from the owner. Keep actual
  // bytes only in memory and never print captured desktop titles on mismatch.
- let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");post(unsafe{GetDlgItem(d,6)},0xf5,0,0);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
+ let client=thread::spawn(move||computer_link_local_transport::paired_client(&name,owner_pid,2));let d=wait_window(&mut owner.0,"#32770");assert_eq!(title(d),"Authorize connected client");click_inventory_button(&mut owner.0,d,6);let actual=client.join().expect("client thread failed").expect("paired read refused");assert!(actual==expected,"paired response differs from exact locally previewed snapshot");wait_title(&mut owner.0,h,"disconnected");post(h,0x111,4,0);wait_title(&mut owner.0,h,"disconnected");
  // A fresh explicit grant is required for the actual packaged local-client.
  // Its intentionally redacted stdout verifies length, not content identity;
  // the independent library roundtrip above retains the exact-byte assertion.
- post(h,0x111,3,0);let grant=wait_window(&mut owner.0,"#32770");assert_eq!(title(grant),"Explicit local permission");post(unsafe{GetDlgItem(grant,6)},0xf5,0,0);wait_title(&mut owner.0,h,"one local grant");let cli_name=title(h).split(" | ").nth(1).unwrap().to_owned();
+ post(h,0x111,3,0);let grant=wait_window(&mut owner.0,"#32770");assert_eq!(title(grant),"Explicit local permission");click_inventory_button(&mut owner.0,grant,6);wait_title(&mut owner.0,h,"one local grant");let cli_name=title(h).split(" | ").nth(1).unwrap().to_owned();
  let mut cli=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
- let consent=wait_window(&mut owner.0,"#32770");assert_eq!(title(consent),"Authorize connected client");post(unsafe{GetDlgItem(consent,6)},0xf5,0,0);finish_client(&mut cli.0,true);
+ let consent=wait_window(&mut owner.0,"#32770");assert_eq!(title(consent),"Authorize connected client");click_inventory_button(&mut owner.0,consent,6);finish_client(&mut cli.0,true);
  let mut output=String::new();use std::io::Read;cli.0.stdout.take().unwrap().read_to_string(&mut output).unwrap();assert!(output.trim()==format!("authenticated response: {n} bytes"),"packaged client did not report expected bounded response length");
  wait_title(&mut owner.0,h,"disconnected");
  let mut replay=Guard(support::command(env!("CARGO_BIN_EXE_local-client")).args([&owner.0.id().to_string(),&cli_name,"read"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap());finish_client(&mut replay.0,false);
